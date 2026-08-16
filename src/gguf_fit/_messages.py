@@ -203,6 +203,20 @@ MESSAGES: dict[str, dict[str, str]] = {
         "en": "quantized -ctk/-ctv requires -fa on (included below)",
         "ja": "-ctk/-ctv の量子化には -fa on が必須 (下に含めてある)",
     },
+    "warn_low_free": {
+        "en": "!! {name} reports {total:.1f} GiB total but only {free:.1f} GiB free "
+              "right now. The plan below uses the total. Free it up, or pass "
+              "--vram {free:.0f} to plan against what is actually available.",
+        "ja": "⚠️ {name} は総量 {total:.1f} GiB ですが、いま空いているのは "
+              "{free:.1f} GiB です。以下の計画は総量で立てています。空けるか、"
+              "--vram {free:.0f} で実際に使える分に合わせてください",
+    },
+    "help_llama_server": {
+        "en": "path to llama-server, used for --list-devices "
+              "(default: llama-server on PATH)",
+        "ja": "llama-server のパス。--list-devices の取得に使います "
+              "(既定: PATH 上の llama-server)",
+    },
     "warn_vram_mismatch": {
         "en": "!! vram {given:.1f} GiB came from {source}, but this machine reports "
               "{detected:.1f} GiB. Planning for another machine? If not, drop the "

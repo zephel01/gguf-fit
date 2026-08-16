@@ -283,6 +283,8 @@ def main() -> int:
     ap.add_argument("--device", default=None)
     ap.add_argument("--threads", type=int, default=None,
                     help=t("help_threads", DEFAULT_LANG))
+    ap.add_argument("--llama-server", default=None, dest="llama_server",
+                    help=t("help_llama_server", DEFAULT_LANG))
     ap.add_argument("--lang", default=None, choices=["en", "ja"],
                     help=t("help_lang", DEFAULT_LANG))
     ap.add_argument("--config", default=None,
@@ -298,7 +300,8 @@ def main() -> int:
     args = ap.parse_args()
 
     cfg, cfg_path = load_config(args.config)
-    hw = _hardware.detect()
+    r_llama = resolve("llama_server", args.llama_server, cfg, "llama-server")
+    hw = _hardware.detect(str(r_llama.value))
     r_lang = resolve("lang", args.lang, cfg, DEFAULT_LANG)
     r_vram = resolve("vram", args.vram, cfg, detected=hw.suggested_vram_gib())
     r_overhead = resolve("overhead", args.overhead, cfg, DEFAULT_OVERHEAD_GIB)
@@ -311,7 +314,7 @@ def main() -> int:
 
     settings = {"lang": r_lang, "vram": r_vram, "overhead": r_overhead,
                 "port": r_port, "device": r_device, "threads": r_threads,
-                "model_path": r_model_path}
+                "llama_server": r_llama, "model_path": r_model_path}
 
     if args.show_config:
         print(render_show_config(settings, cfg_path))
@@ -340,6 +343,14 @@ def main() -> int:
 
     # 設定ファイルを別のマシンに持っていったときに気づけるようにする。
     # 実測が取れているのに指定値と 食い違うなら、そう言う。
+    # 総量は足りていても、いま空いていなければ載らない。
+    # 統合GPUで実際に見た: 総量 96 GiB / 空き 16.3 GiB。
+    tight = hw.tight_on_free_memory()
+    if tight is not None:
+        print("# " + t("warn_low_free", lang, name=tight.name,
+                       total=tight.total_gib, free=tight.free_gib),
+              file=sys.stderr)
+
     if r_vram.source != "detected" and _hardware.vram_disagrees(vram, hw):
         print("# " + t("warn_vram_mismatch", lang, given=vram,
                        source=r_vram.source, detected=hw.suggested_vram_gib()),

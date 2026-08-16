@@ -6,7 +6,10 @@
 
 検出の手段:
 
-  GPU     nvidia-smi (無ければ諦める)
+  GPU     llama-server --list-devices が第一候補。**llama.cpp 自身が認識して
+          いる値**なので、CUDA / ROCm / Vulkan / Metal のどれでも同じ形で
+          取れるうえ、--device にそのまま書ける識別子が手に入る。
+          見つからないときだけ nvidia-smi に落とす
   統合メモリ  macOS の Apple Silicon は VRAM が独立していないので RAM から推定
   RAM     Linux: sysconf / macOS: sysctl / Windows: GlobalMemoryStatusEx
   CPU     物理コア数。llama.cpp の --threads は**論理ではなく物理**に合わせる
@@ -39,6 +42,11 @@ class Gpu(NamedTuple):
     name: str
     total_gib: float
     used_gib: float
+    #: llama.cpp が使う識別子 ("CUDA0" / "ROCm0" / "Vulkan0" ...)。
+    #: --list-devices から取れたときだけ入る
+    device_id: str | None = None
+    #: いま空いている量。--list-devices から取れたときだけ入る
+    free_gib: float | None = None
 
 
 class Hardware(NamedTuple):
@@ -67,19 +75,42 @@ class Hardware(NamedTuple):
     def suggested_device(self) -> str | None:
         """``--device`` の既定。**分からないときは None を返して省略させる**.
 
+        ``--list-devices`` から取れていれば、**一番大きいデバイスの識別子**を
+        そのまま返す。llama.cpp 自身が名乗っている名前なので推測が要らない。
+
+        取れていない (nvidia-smi しか無い) ときは ``CUDA0`` に落とすが、
+        **nvidia-smi の並び順と CUDA のデバイス番号は一致しない**
+        (nvidia-smi は PCI 順、CUDA は既定で性能順)。番号を勝手に振ると
+        静かに別のカードを掴むので、複数枚あるときは注意書きを出す。
+
         NVIDIA が見えないのに ``CUDA0`` を書くと、そのコマンドは起動しない。
         Apple Silicon は Metal が既定で選ばれるので ``--device`` は要らない。
-
-        NVIDIA があるときも ``CUDA0`` 固定にしている。**nvidia-smi の並び順と
-        CUDA のデバイス番号は一致しない** (nvidia-smi は PCI 順、CUDA は既定で
-        性能順)。番号を勝手に振ると静かに別のカードを掴むので、
-        ここは推測せず、複数枚あるときは注意書きを出す方を選ぶ。
         """
-        return "CUDA0" if self.gpus else None
+        big = self.largest_gpu
+        if big is None:
+            return None
+        return big.device_id or "CUDA0"
 
     def device_index_is_ambiguous(self) -> bool:
-        """複数枚あって、nvidia-smi と CUDA の番号がずれうるか."""
+        """番号を推測している状態か.
+
+        ``--list-devices`` から識別子が取れていれば曖昧さは無い。
+        nvidia-smi しか無くて複数枚あるときだけ、番号がずれうる。
+        """
+        if any(g.device_id for g in self.gpus):
+            return False
         return len(self.gpus) > 1
+
+    def tight_on_free_memory(self) -> Gpu | None:
+        """総量に対して空きが極端に少ないデバイスを返す.
+
+        統合 GPU (Strix Halo など) で実際に見た: 総量 96 GiB に対して
+        空きが 16.3 GiB。総量だけ見て計画すると**載らないものを勧める**。
+        """
+        big = self.largest_gpu
+        if big is None or big.free_gib is None:
+            return None
+        return big if big.free_gib < big.total_gib * 0.5 else None
 
 
 def _run(cmd: list[str]) -> str | None:
@@ -92,6 +123,46 @@ def _run(cmd: list[str]) -> str | None:
     except (OSError, subprocess.SubprocessError):
         return None
     return r.stdout if r.returncode == 0 else None
+
+
+#: `  ROCm0: AMD Radeon 8060S Graphics (98304 MiB, 16642 MiB free)`
+_DEVICE_LINE = re.compile(
+    r"^\s*(?P<id>[A-Za-z]+(?P<index>\d+)):\s*(?P<name>.+?)\s*"
+    r"\((?P<total>\d+)\s*MiB(?:,\s*(?P<free>\d+)\s*MiB free)?\)\s*$")
+
+
+def detect_llama_devices(binary: str = "llama-server") -> list[Gpu]:
+    """``llama-server --list-devices`` から拾う。**これが第一候補**.
+
+    llama.cpp 自身が認識している値なので、
+
+      ・CUDA / ROCm / Vulkan / Metal のどれでも同じ形で取れる
+      ・``--device`` にそのまま書ける識別子が手に入る (番号の推測が要らない)
+      ・総量だけでなく**空き**も分かる
+
+    実際の出力::
+
+        Available devices:
+          ROCm0: AMD Radeon 8060S Graphics (98304 MiB, 16642 MiB free)
+
+    バイナリがビルドごとに別 (build-cuda / build-rocm) なので、
+    パスは設定で差し替えられるようにしてある。
+    """
+    out = _run([binary, "--list-devices"])
+    if not out:
+        return []
+    gpus = []
+    for line in out.splitlines():
+        m = _DEVICE_LINE.match(line)
+        if not m:
+            continue
+        total = round(int(m["total"]) / 1024, 2)
+        free = round(int(m["free"]) / 1024, 2) if m["free"] else None
+        gpus.append(Gpu(index=int(m["index"]), name=m["name"],
+                        total_gib=total,
+                        used_gib=round(total - free, 2) if free is not None else 0.0,
+                        device_id=m["id"], free_gib=free))
+    return gpus
 
 
 def detect_gpus() -> list[Gpu]:
@@ -203,9 +274,10 @@ def is_unified_memory() -> bool:
     return sys.platform == "darwin" and platform.machine() in ("arm64", "aarch64")
 
 
-def detect() -> Hardware:
+def detect(llama_server: str = "llama-server") -> Hardware:
     """このマシンを一度だけ調べる。**失敗しても例外は出さない**."""
-    gpus = detect_gpus()
+    # llama.cpp が名乗る値を優先。無ければ nvidia-smi に落とす。
+    gpus = detect_llama_devices(llama_server) or detect_gpus()
     physical, logical = detect_cores()
     return Hardware(gpus=gpus, ram_gib=detect_ram_gib(),
                     physical_cores=physical, logical_cores=logical,
@@ -217,8 +289,10 @@ def render(hw: Hardware) -> str:
     lines = ["detected hardware"]
     if hw.gpus:
         for g in hw.gpus:
-            lines.append(f"  GPU {g.index}      {g.name}  "
-                         f"{g.total_gib:.1f} GiB ({g.used_gib:.1f} used)")
+            label = g.device_id or f"GPU {g.index}"
+            detail = (f"{g.free_gib:.1f} free" if g.free_gib is not None
+                      else f"{g.used_gib:.1f} used")
+            lines.append(f"  {label:<11} {g.name}  {g.total_gib:.1f} GiB ({detail})")
     elif hw.unified_memory:
         lines.append("  GPU         none; Apple Silicon unified memory")
     else:

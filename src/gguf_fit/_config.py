@@ -51,6 +51,7 @@ KNOWN_KEYS: dict[str, type] = {
     "device": str,
     "port": int,
     "threads": int,
+    "llama_server": str,
     "model_path": str,
 }
 

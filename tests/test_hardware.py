@@ -262,3 +262,112 @@ def test_gpu_sizes_are_rounded_at_detection(fake_run):
     assert gpus[1].total_gib == 31.84
     assert gpus[1].used_gib == 21.84
     assert len(str(gpus[1].total_gib)) <= 6
+
+
+# --- llama-server --list-devices（第一候補の情報源）----------------------
+
+#: 実機の出力そのまま (Strix Halo / ROCm ビルド)
+LIST_DEVICES_ROCM = """Available devices:
+  ROCm0: AMD Radeon 8060S Graphics (98304 MiB, 16642 MiB free)
+"""
+LIST_DEVICES_CUDA = """Available devices:
+  CUDA0: NVIDIA GeForce RTX 5090 (32607 MiB, 32100 MiB free)
+  CUDA1: NVIDIA GeForce RTX 3090 (24576 MiB, 24297 MiB free)
+"""
+
+
+def test_parses_amd_rocm_devices(fake_run):
+    """nvidia-smi では AMD が丸ごと見えない。--list-devices なら取れる."""
+    fake_run({"llama-server": LIST_DEVICES_ROCM})
+    gpus = hw.detect_llama_devices()
+    assert len(gpus) == 1
+    g = gpus[0]
+    assert g.device_id == "ROCm0"
+    assert g.name == "AMD Radeon 8060S Graphics"
+    assert g.total_gib == 96.0
+    assert g.free_gib == pytest.approx(16.25, abs=0.01)
+
+
+def test_device_id_comes_from_llama_not_from_a_guess(fake_run):
+    """--device に書く値を推測しなくてよくなる。これが一番の利点."""
+    fake_run({"llama-server": LIST_DEVICES_ROCM})
+    h = hw.Hardware(gpus=hw.detect_llama_devices(), ram_gib=31.0,
+                    physical_cores=16, logical_cores=32, unified_memory=False)
+    assert h.suggested_device() == "ROCm0"
+    assert h.device_index_is_ambiguous() is False
+
+
+def test_known_device_ids_remove_the_numbering_ambiguity(fake_run):
+    """llama.cpp 自身の番号なので、複数枚でもずれようがない."""
+    fake_run({"llama-server": LIST_DEVICES_CUDA})
+    h = hw.Hardware(gpus=hw.detect_llama_devices(), ram_gib=31.0,
+                    physical_cores=16, logical_cores=32, unified_memory=False)
+    assert h.suggested_device() == "CUDA0"       # 一番大きいのは 5090
+    assert h.largest_gpu.name.endswith("5090")
+    assert h.device_index_is_ambiguous() is False
+
+
+def test_llama_devices_win_over_nvidia_smi(monkeypatch, fake_run):
+    fake_run({"llama-server": LIST_DEVICES_ROCM, "nvidia-smi": NVIDIA_TWO_GPUS})
+    monkeypatch.setattr(hw, "detect_ram_gib", lambda: 31.0)
+    monkeypatch.setattr(hw, "detect_cores", lambda: (16, 32))
+    h = hw.detect()
+    assert [g.device_id for g in h.gpus] == ["ROCm0"]
+
+
+def test_falls_back_to_nvidia_smi_without_llama_server(monkeypatch, fake_run):
+    """llama.cpp がパスに無い環境も普通にある."""
+    fake_run({"nvidia-smi": NVIDIA_TWO_GPUS})
+    monkeypatch.setattr(hw, "detect_ram_gib", lambda: 31.0)
+    monkeypatch.setattr(hw, "detect_cores", lambda: (16, 32))
+    h = hw.detect()
+    assert len(h.gpus) == 2
+    assert all(g.device_id is None for g in h.gpus)
+    assert h.device_index_is_ambiguous() is True   # 番号を推測している状態
+
+
+def test_noise_around_the_device_lines_is_ignored(fake_run):
+    fake_run({"llama-server": "ggml_cuda_init: found 1 device\n"
+                              "Available devices:\n"
+                              "  CUDA0: RTX 5090 (32607 MiB, 32100 MiB free)\n"
+                              "load_backend: loaded RPC backend\n"})
+    assert [g.device_id for g in hw.detect_llama_devices()] == ["CUDA0"]
+
+
+def test_missing_free_field_is_tolerated(fake_run):
+    """llama.cpp のバージョンで書式が変わりうる。総量だけでも使う."""
+    fake_run({"llama-server": "  Metal0: Apple M4 Max (49152 MiB)\n"})
+    g = hw.detect_llama_devices()[0]
+    assert g.device_id == "Metal0"
+    assert g.total_gib == 48.0
+    assert g.free_gib is None
+
+
+# --- 総量と空きの乖離 ------------------------------------------------------
+
+def test_integrated_gpu_with_little_free_memory_is_flagged(fake_run):
+    """実機: 総量 96 GiB に対して空き 16.3 GiB。
+
+    総量だけ見て計画すると「載らないもの」を勧めてしまう。
+    """
+    fake_run({"llama-server": LIST_DEVICES_ROCM})
+    h = hw.Hardware(gpus=hw.detect_llama_devices(), ram_gib=31.0,
+                    physical_cores=16, logical_cores=32, unified_memory=False)
+    tight = h.tight_on_free_memory()
+    assert tight is not None
+    assert tight.total_gib == 96.0
+    assert tight.free_gib == pytest.approx(16.25, abs=0.01)
+
+
+def test_a_mostly_idle_card_is_not_flagged(fake_run):
+    fake_run({"llama-server": LIST_DEVICES_CUDA})
+    h = hw.Hardware(gpus=hw.detect_llama_devices(), ram_gib=31.0,
+                    physical_cores=16, logical_cores=32, unified_memory=False)
+    assert h.tight_on_free_memory() is None
+
+
+def test_nothing_is_flagged_without_a_free_figure():
+    """nvidia-smi 経由だと空きが分からない。分からないものは言わない."""
+    h = hw.Hardware(gpus=[hw.Gpu(0, "RTX 5090", 31.8, 21.8)], ram_gib=31.0,
+                    physical_cores=16, logical_cores=32, unified_memory=False)
+    assert h.tight_on_free_memory() is None
