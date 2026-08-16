@@ -253,3 +253,12 @@ def test_nothing_is_said_when_detection_failed():
 
 def test_nothing_is_said_when_no_value_was_given():
     assert hw.vram_disagrees(None, LINUX_2GPU) is False
+
+
+def test_gpu_sizes_are_rounded_at_detection(fake_run):
+    """32607 MiB / 1024 = 31.8427734375。この生値を持ち回らない."""
+    fake_run({"nvidia-smi": NVIDIA_TWO_GPUS})
+    gpus = hw.detect_gpus()
+    assert gpus[1].total_gib == 31.84
+    assert gpus[1].used_gib == 21.84
+    assert len(str(gpus[1].total_gib)) <= 6

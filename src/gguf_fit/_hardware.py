@@ -106,8 +106,11 @@ def detect_gpus() -> list[Gpu]:
         if len(parts) < 4:
             continue
         try:
+            # MiB / 1024 をそのまま持つと 31.8427734375 のような値が
+            # 設定ファイルにまで流れる。ここで丸めておく。
             gpus.append(Gpu(int(parts[0]), parts[1],
-                            int(parts[2]) / 1024, int(parts[3]) / 1024))
+                            round(int(parts[2]) / 1024, 2),
+                            round(int(parts[3]) / 1024, 2)))
         except ValueError:
             continue
     return gpus

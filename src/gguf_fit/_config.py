@@ -193,6 +193,12 @@ def render_toml(resolved: dict[str, Resolved], hw_summary: str = "") -> str:
         if r.value is None:
             lines.append(f"# {key} = ...   # 取得できませんでした")
             continue
-        value = f'"{r.value}"' if isinstance(r.value, str) else repr(r.value)
+        if isinstance(r.value, str):
+            value = f'"{r.value}"'
+        elif isinstance(r.value, float):
+            # 31.8427734375 のような値をそのまま書かない
+            value = repr(round(r.value, 2))
+        else:
+            value = repr(r.value)
         lines.append(f"{key} = {value}   # <- {r.source}")
     return "\n".join(lines) + "\n"

@@ -235,3 +235,14 @@ def test_hardware_summary_is_embedded_as_comments(tmp_path):
     p.write_text(text, encoding="utf-8")
     cfg, _ = _config.load_config(p)   # コメントなので読み込みを壊さない
     assert cfg == {"vram": 31.8}
+
+
+def test_floats_are_rounded_before_writing(tmp_path):
+    """MiB/1024 の生値 (31.8427734375) を設定ファイルに書かない."""
+    text = _config.render_toml({"vram": _config.Resolved(31.8427734375, "detected")})
+    assert "vram = 31.84   # <- detected" in text
+    assert "31.8427" not in text
+    p = tmp_path / "gguf-fit.toml"
+    p.write_text(text, encoding="utf-8")
+    cfg, _ = _config.load_config(p)
+    assert cfg["vram"] == 31.84
