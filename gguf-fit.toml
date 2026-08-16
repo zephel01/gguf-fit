@@ -1,0 +1,23 @@
+# gguf-fit の設定ファイル
+#
+# gguf-plan --write-config で生成しました。
+# 各行の <- は、その値がどこから来たかです。
+#   detected = このマシンを見て決めた値
+#   default  = 組み込みの既定値
+#   cli/env/config = あなたが指定した値
+#
+# 優先順位: CLI フラグ > 環境変数 > このファイル > 実測 > 組み込み既定
+# いま何が効いているかは `gguf-plan --show-config` で確認できます。
+#
+# detected hardware
+#   GPU         none; Apple Silicon unified memory
+#   RAM         64.0 GiB
+#   CPU         16 physical
+
+lang = "ja"   # <- config
+vram = 48.0   # <- detected
+overhead = 1.0   # <- default
+port = 8085   # <- default
+# device = ...   # 取得できませんでした
+threads = 16   # <- detected
+# model_path = ...   # 取得できませんでした

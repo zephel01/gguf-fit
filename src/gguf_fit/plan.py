@@ -41,7 +41,8 @@ import json
 import sys
 from pathlib import Path
 
-from ._config import load_config, render_show_config, resolve
+from . import _hardware
+from ._config import load_config, render_show_config, render_toml, resolve
 from ._messages import DEFAULT_LANG, t
 
 GIB = 1024 ** 3
@@ -188,8 +189,9 @@ def cmd_table(recs, vram, overhead, ctx_req, lang=DEFAULT_LANG):
 
 
 def emit_config(rec: dict, ctx: int, kv_mode: str, vram: float, overhead: float,
-                model_path: str, port: int, device: str,
-                lang: str = DEFAULT_LANG) -> str:
+                model_path: str, port: int, device: str | None,
+                lang: str = DEFAULT_LANG, threads: int | None = None,
+                device_ambiguous: bool = False, n_gpus: int = 0) -> str:
     think = rec.get("chat_template_has_think")
     samp = THINKING_SAMPLING if think else NON_THINKING_SAMPLING
     mtp = bool(rec.get("mtp_tensor_count"))
@@ -225,15 +227,22 @@ def emit_config(rec: dict, ctx: int, kv_mode: str, vram: float, overhead: float,
     # そこから行末までがコメントになり、\ ごと消えてコマンドが壊れる。
     if kv_mode == "q8_0":
         L.append("# " + t("note_fa_required", lang))
+    if not device:
+        L.append("# " + t("note_no_device", lang))
+    elif device_ambiguous:
+        L.append("# " + t("note_device_ambiguous", lang, n=n_gpus))
     L.append("# " + (t("note_mtp_yes", lang, n=rec["mtp_tensor_count"]) if mtp
                      else t("note_mtp_no", lang)))
     args = [
         f"llama-server -m {model_path}",
-        f"--port {port} --device {device}",
+        f"--port {port} --device {device}" if device else f"--port {port}",
         "-ngl 99 -fa on",
         f"--ctx-size {ctx} --parallel 1",
         "--batch-size 2048 --ubatch-size 512",
     ]
+    if threads:
+        # llama.cpp の --threads は論理コアではなく**物理コア**に合わせる
+        args.append(f"--threads {threads}")
     if kv_mode == "q8_0":
         args.append("-ctk q8_0 -ctv q8_0")
     if mtp:
@@ -272,34 +281,61 @@ def main() -> int:
                     help=t("help_model_path", DEFAULT_LANG))
     ap.add_argument("--port", type=int, default=None)
     ap.add_argument("--device", default=None)
+    ap.add_argument("--threads", type=int, default=None,
+                    help=t("help_threads", DEFAULT_LANG))
     ap.add_argument("--lang", default=None, choices=["en", "ja"],
                     help=t("help_lang", DEFAULT_LANG))
     ap.add_argument("--config", default=None,
                     help="path to a gguf-fit.toml (overrides the search)")
     ap.add_argument("--show-config", action="store_true", dest="show_config",
                     help="print the settings in effect and where each came from")
+    ap.add_argument("--write-config", nargs="?", const="gguf-fit.toml",
+                    default=None, dest="write_config", metavar="PATH",
+                    help="write the detected settings to a gguf-fit.toml "
+                         "(default: ./gguf-fit.toml)")
+    ap.add_argument("--force", action="store_true",
+                    help="allow --write-config to overwrite an existing file")
     args = ap.parse_args()
 
     cfg, cfg_path = load_config(args.config)
+    hw = _hardware.detect()
     r_lang = resolve("lang", args.lang, cfg, DEFAULT_LANG)
-    r_vram = resolve("vram", args.vram, cfg)
+    r_vram = resolve("vram", args.vram, cfg, detected=hw.suggested_vram_gib())
     r_overhead = resolve("overhead", args.overhead, cfg, DEFAULT_OVERHEAD_GIB)
     r_port = resolve("port", args.port, cfg, 8085)
-    r_device = resolve("device", args.device, cfg, "CUDA0")
+    r_device = resolve("device", args.device, cfg,
+                       detected=hw.suggested_device())
+    r_threads = resolve("threads", args.threads, cfg,
+                        detected=hw.suggested_threads())
     r_model_path = resolve("model_path", args.model_path, cfg)
 
+    settings = {"lang": r_lang, "vram": r_vram, "overhead": r_overhead,
+                "port": r_port, "device": r_device, "threads": r_threads,
+                "model_path": r_model_path}
+
     if args.show_config:
-        print(render_show_config(
-            {"lang": r_lang, "vram": r_vram, "overhead": r_overhead,
-             "port": r_port, "device": r_device, "model_path": r_model_path},
-            cfg_path))
+        print(render_show_config(settings, cfg_path))
+        print()
+        print(_hardware.render(hw))
+        return 0
+
+    if args.write_config:
+        dest = Path(args.write_config)
+        if dest.exists() and not args.force:
+            sys.exit(f"{dest} already exists. Pass --force to overwrite it.")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(render_toml(settings, _hardware.render(hw)),
+                        encoding="utf-8")
+        print(f"[written] {dest}", file=sys.stderr)
+        print(dest.read_text(encoding="utf-8"), end="")
         return 0
 
     lang = r_lang.value
     if not args.json_path:
         ap.error("json_path is required")
     if r_vram.value is None:
-        ap.error("--vram is required (or set vram in the config file)")
+        ap.error("could not detect any GPU, so --vram is required "
+                 "(or set vram in the config file)")
     vram, overhead = float(r_vram.value), float(r_overhead.value)
 
     recs = json.loads(Path(args.json_path).read_text(encoding="utf-8"))
@@ -350,8 +386,12 @@ def main() -> int:
     mp = model_path_of(rec, r_model_path.value)
     if not rec.get("path") and not r_model_path.value:
         print("# " + t("no_path_in_json", lang), file=sys.stderr)
+    device = str(r_device.value) if r_device.value else None
     print(emit_config(rec, ctx, kv_mode, vram, overhead,
-                      mp, int(r_port.value), str(r_device.value), lang))
+                      mp, int(r_port.value), device, lang,
+                      threads=r_threads.value,
+                      device_ambiguous=hw.device_index_is_ambiguous(),
+                      n_gpus=len(hw.gpus)))
     return 0
 
 

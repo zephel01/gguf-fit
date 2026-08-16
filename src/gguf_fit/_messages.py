@@ -203,6 +203,18 @@ MESSAGES: dict[str, dict[str, str]] = {
         "en": "quantized -ctk/-ctv requires -fa on (included below)",
         "ja": "-ctk/-ctv の量子化には -fa on が必須 (下に含めてある)",
     },
+    "note_no_device": {
+        "en": "no NVIDIA GPU detected, so --device is omitted "
+              "(llama.cpp picks Metal / CPU on its own)",
+        "ja": "NVIDIA GPU が見つからないので --device は付けません "
+              "(llama.cpp が Metal / CPU を自分で選びます)",
+    },
+    "note_device_ambiguous": {
+        "en": "{n} GPUs detected. nvidia-smi order is PCI order and does NOT match "
+              "CUDA device numbering -- check with --list-devices",
+        "ja": "GPU が {n} 枚あります。nvidia-smi の並びは PCI 順で、CUDA の"
+              "デバイス番号とは一致しません -- --list-devices で確認してください",
+    },
     "note_mtp_yes": {
         "en": "found {n} MTP tensors -> adding --spec-type draft-mtp",
         "ja": "MTP テンソルを {n} 本確認 → --spec-type draft-mtp を付ける",
@@ -313,6 +325,10 @@ MESSAGES: dict[str, dict[str, str]] = {
     "help_kv": {
         "en": "KV cache type (default auto = q8_0 when f16 does not fit)",
         "ja": "KVキャッシュの型 (既定 auto = f16 で入らなければ q8_0)",
+    },
+    "help_threads": {
+        "en": "--threads for llama-server (default: detected physical cores)",
+        "ja": "llama-server の --threads (既定: 検出した物理コア数)",
     },
     "help_model_path": {
         "en": "path to write in the launch command",

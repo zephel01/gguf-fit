@@ -310,3 +310,33 @@ def test_max_tokens_leaves_room_for_the_prompt():
                       if ln.strip().startswith("max_tokens:")
                       ).split(":")[1].split("#")[0].strip())
         assert mt < ctx, "max_tokens が ctx 以上だと実効上限は n_ctx - プロンプト長になる"
+
+
+# --- --device の出し分け --------------------------------------------------
+
+def test_device_flag_is_omitted_when_unknown():
+    """NVIDIA が無い環境で --device CUDA0 を書くと起動しない（実バグ）."""
+    out = gguf_plan.emit_config(Q5_K_M, 65536, "f16", vram=48.0, overhead=1.0,
+                                model_path="/m/x.gguf", port=8085, device=None)
+    # 注記の中には "--device is omitted" という文字列が出るので、
+    # 本文全体の in 判定では見分けられない。引数として出ていないことを見る。
+    assert not any(ln.strip().startswith("--port") and "--device" in ln
+                   for ln in out.splitlines())
+    assert "no NVIDIA GPU detected" in out
+    assert "--port 8085" in out
+
+
+def test_multiple_gpus_get_a_numbering_warning():
+    out = gguf_plan.emit_config(Q5_K_M, 65536, "f16", vram=24.0, overhead=1.0,
+                                model_path="/m/x.gguf", port=8085, device="CUDA0",
+                                device_ambiguous=True, n_gpus=2)
+    assert "--device CUDA0" in out
+    assert "does NOT match" in out
+
+
+def test_single_gpu_has_no_extra_noise():
+    out = gguf_plan.emit_config(Q5_K_M, 65536, "f16", vram=24.0, overhead=1.0,
+                                model_path="/m/x.gguf", port=8085, device="CUDA0")
+    assert "--device CUDA0" in out
+    assert "does NOT match" not in out
+    assert "no NVIDIA GPU" not in out

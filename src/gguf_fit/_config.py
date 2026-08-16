@@ -5,7 +5,11 @@
     1. CLI のフラグ          --lang ja
     2. 環境変数              GGUF_FIT_LANG=ja
     3. 設定ファイル          lang = "ja"
-    4. 組み込みの既定値      "en"
+    4. このマシンの実測      vram / threads は nvidia-smi や /proc/cpuinfo から
+    5. 組み込みの既定値      "en"
+
+**実測を設定ファイルより下に置くのは意図的**。設定ファイルに書いた値が
+勝手に上書きされたら、書いた意味がない。
 
 設定ファイルの探索順 (最初に見つかった1つだけを使う。マージはしない):
 
@@ -46,6 +50,7 @@ KNOWN_KEYS: dict[str, type] = {
     "overhead": float,
     "device": str,
     "port": int,
+    "threads": int,
     "model_path": str,
 }
 
@@ -57,7 +62,7 @@ class Resolved(NamedTuple):
     """解決した値と、**その出どころ**."""
 
     value: Any
-    source: str  # "cli" / "env" / "config" / "default"
+    source: str  # "cli" / "env" / "config" / "detected" / "default"
 
 
 def config_search_paths(explicit: str | os.PathLike | None = None) -> list[Path]:
@@ -109,8 +114,13 @@ def load_config(explicit: str | os.PathLike | None = None) -> tuple[dict, Path |
     return {}, None
 
 
-def resolve(key: str, cli_value: Any, config: dict, default: Any = None) -> Resolved:
-    """1項目を優先順位に従って解決し、出どころも返す."""
+def resolve(key: str, cli_value: Any, config: dict, default: Any = None,
+            detected: Any = None) -> Resolved:
+    """1項目を優先順位に従って解決し、出どころも返す.
+
+    ``detected`` はこのマシンを見て得た値 (VRAM 容量、物理コア数など)。
+    **設定ファイルより下、組み込み既定より上**に置く。
+    """
     if cli_value is not None:
         return Resolved(cli_value, "cli")
 
@@ -126,12 +136,15 @@ def resolve(key: str, cli_value: Any, config: dict, default: Any = None) -> Reso
     if key in config:
         return Resolved(config[key], "config")
 
+    if detected is not None:
+        return Resolved(detected, "detected")
+
     return Resolved(default, "default")
 
 
 def render_show_config(resolved: dict[str, Resolved], path: Path | None) -> str:
     """``--show-config`` の出力。どの値がどこから来たかを一覧にする."""
-    lines = ["settings in effect (cli > env > config file > default)", ""]
+    lines = ["settings in effect (cli > env > config file > detected > default)", ""]
     where = str(path) if path else "(none found)"
     lines.append(f"  config file: {where}")
     if path is None:
@@ -143,3 +156,39 @@ def render_show_config(resolved: dict[str, Resolved], path: Path | None) -> str:
         shown = "(unset)" if r.value is None else r.value
         lines.append(f"  {key:<{width}}  {shown!s:<24} <- {r.source}")
     return "\n".join(lines)
+
+
+def render_toml(resolved: dict[str, Resolved], hw_summary: str = "") -> str:
+    """いま効いている値を gguf-fit.toml の中身として書き出す.
+
+    **検出できた値は実際に書き込む**。設定ファイルに書いてしまえば、
+    別のマシンに持っていっても、nvidia-smi が使えない環境でも同じ計画が出る。
+
+    検出のままにしておきたい項目はコメントアウトして出す。書いてある値と
+    検出値のどちらが効いているのか分からなくなるのを避けるため、
+    **由来を各行に残す**。
+    """
+    lines = [
+        "# gguf-fit の設定ファイル",
+        "#",
+        "# gguf-plan --write-config で生成しました。",
+        "# 各行の <- は、その値がどこから来たかです。",
+        "#   detected = このマシンを見て決めた値",
+        "#   default  = 組み込みの既定値",
+        "#   cli/env/config = あなたが指定した値",
+        "#",
+        "# 優先順位: CLI フラグ > 環境変数 > このファイル > 実測 > 組み込み既定",
+        "# いま何が効いているかは `gguf-plan --show-config` で確認できます。",
+    ]
+    if hw_summary:
+        lines.append("#")
+        lines.extend("# " + ln for ln in hw_summary.splitlines())
+    lines.append("")
+
+    for key, r in resolved.items():
+        if r.value is None:
+            lines.append(f"# {key} = ...   # 取得できませんでした")
+            continue
+        value = f'"{r.value}"' if isinstance(r.value, str) else repr(r.value)
+        lines.append(f"{key} = {value}   # <- {r.source}")
+    return "\n".join(lines) + "\n"

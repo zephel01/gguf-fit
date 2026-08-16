@@ -48,8 +48,12 @@ pip install git+https://github.com/zephel01/gguf-fit
 
 ```bash
 gguf-probe --json --out gguf.json /models/Qwen3.8-27B-GGUF/*.gguf
-gguf-plan gguf.json --vram 24 --pick Q5_K_M
+gguf-plan gguf.json --pick Q5_K_M
 ```
+
+Your VRAM, physical core count, and whether `--device` even applies are **detected from the
+machine** — no flags needed. Pass `--vram 24` when you want to plan for a *different* machine
+than the one you're on.
 
 ```console
 # ===== Qwen3.8-27B-Q5_K_M / ctx 65,536 / KV f16 =====
@@ -237,8 +241,53 @@ without a single model file.
 Every setting resolves in this order, and `--show-config` tells you which one won:
 
 ```
-CLI flag  >  environment variable  >  config file  >  built-in default
+CLI flag  >  environment variable  >  config file  >  detected  >  built-in default
 ```
+
+### What gets detected
+
+| | How | Used for |
+| :-- | :-- | :-- |
+| **VRAM** | `nvidia-smi`; the largest card if several | `--vram` |
+| **Unified memory** | Apple Silicon → 75% of RAM (macOS caps what the GPU may take) | `--vram` |
+| **Physical cores** | `/proc/cpuinfo` `(physical id, core id)` pairs, `hw.physicalcpu` on macOS | `--threads` |
+| **Whether CUDA applies** | no NVIDIA → `--device` is **omitted**, not guessed | launch command |
+
+`--threads` uses **physical** cores, not logical ones: handing llama.cpp the SMT siblings
+tends to make matrix multiplication slower, not faster.
+
+> [!WARNING]
+> With more than one NVIDIA card, `gguf-plan` still writes `CUDA0` and adds a warning.
+> `nvidia-smi` lists in PCI order and CUDA numbers devices by its own ordering — **they do
+> not match**. Guessing an index here silently grabs the wrong card, so the tool refuses to
+> guess. Check with `llama-server --list-devices`.
+
+### Writing it down
+
+Detection is convenient but not portable. `--write-config` freezes the current values into a
+file, so the same plan comes out on a machine without `nvidia-smi`, or when you're planning
+for someone else's hardware.
+
+```console
+$ gguf-plan --write-config
+[written] gguf-fit.toml
+
+# detected hardware
+#   GPU 0       NVIDIA GeForce RTX 5090  31.8 GiB (0.0 used)
+#   RAM         31.0 GiB
+#   CPU         16 physical / 32 logical
+
+lang = "en"   # <- default
+vram = 31.8   # <- detected
+overhead = 1.0   # <- default
+device = "CUDA0"   # <- detected
+threads = 16   # <- detected
+```
+
+Each line records **where the value came from**, so six months later you can still tell what
+you chose from what the machine reported. Values that could not be detected are commented
+out rather than written as `None`, which would not parse. It refuses to overwrite an existing
+file without `--force`.
 
 ```toml
 # ./gguf-fit.toml   (or ~/.config/gguf-fit/config.toml, or $GGUF_FIT_CONFIG)
@@ -264,7 +313,8 @@ settings in effect (cli > env > config file > default)
 ```
 
 Environment variables are the same names with a `GGUF_FIT_` prefix: `GGUF_FIT_LANG`,
-`GGUF_FIT_VRAM`, and so on.
+`GGUF_FIT_VRAM`, and so on. Detection sits **below** the config file on purpose — a value you
+wrote down should not be silently overridden by the machine.
 
 > [!TIP]
 > Only the first config file found is used — they are not merged. Merging makes "where did

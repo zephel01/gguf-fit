@@ -50,8 +50,11 @@ pip install git+https://github.com/zephel01/gguf-fit
 
 ```bash
 gguf-probe --json --out gguf.json /models/Qwen3.8-27B-GGUF/*.gguf
-gguf-plan gguf.json --vram 24 --pick Q5_K_M --lang ja
+gguf-plan gguf.json --pick Q5_K_M --lang ja
 ```
+
+VRAM・物理コア数・そもそも `--device` が要るかどうかは**このマシンを見て決めます**。
+フラグは要りません。`--vram 24` を渡すのは、**別のマシン向けに計画を立てたいとき**です。
 
 **出力は既定で英語**です。`--lang ja` で日本語になります（設定ファイルに `lang = "ja"`
 と書けば毎回付ける必要はありません）。
@@ -280,8 +283,51 @@ recommended_ctx(rec, vram_gib=24.0, kv_mode="q8_0", overhead=1.0)
 すべての設定はこの順で解決され、**どれが効いたかは `--show-config` で分かります**。
 
 ```
-CLI フラグ  >  環境変数  >  設定ファイル  >  組み込みの既定値
+CLI フラグ  >  環境変数  >  設定ファイル  >  実測  >  組み込みの既定値
 ```
+
+### 何を自動で見るか
+
+| | 方法 | 使い道 |
+| :-- | :-- | :-- |
+| **VRAM** | `nvidia-smi`。複数枚なら一番大きいカード | `--vram` |
+| **統合メモリ** | Apple Silicon は RAM の 75%（macOS が GPU に回せる量に上限がある） | `--vram` |
+| **物理コア** | `/proc/cpuinfo` の `(physical id, core id)`、macOS は `hw.physicalcpu` | `--threads` |
+| **CUDA が要るか** | NVIDIA が無ければ `--device` を**推測せず省略** | 起動コマンド |
+
+`--threads` は**論理コアではなく物理コア**です。SMT の相方まで渡すと、行列積は速くならず
+むしろ奪い合って遅くなることがあります。
+
+> [!WARNING]
+> NVIDIA が複数枚あるとき、`gguf-plan` は `CUDA0` を出しつつ注意書きを添えます。
+> **`nvidia-smi` の並びは PCI 順で、CUDA のデバイス番号とは一致しません。**
+> ここで番号を推測すると静かに別のカードを掴むので、推測しない方を選んでいます。
+> `llama-server --list-devices` で確認してください。
+
+### 書き留める
+
+自動検出は楽ですが、そのマシンでしか効きません。`--write-config` で**いまの値をファイルに
+固定**できます。`nvidia-smi` が無い環境でも、他人のハードを想定するときでも、同じ計画が出ます。
+
+```console
+$ gguf-plan --write-config
+[written] gguf-fit.toml
+
+# detected hardware
+#   GPU         none; Apple Silicon unified memory
+#   RAM         64.0 GiB
+#   CPU         16 physical
+
+lang = "ja"   # <- config
+vram = 48.0   # <- detected
+overhead = 1.0   # <- default
+# device = ...   # 取得できませんでした
+threads = 16   # <- detected
+```
+
+**各行に由来が残ります。**半年後に「この値は自分で決めたのか、マシンが言ってきたのか」を
+見分けられるようにするためです。取得できなかった項目は `None` を書くと TOML が壊れるので、
+コメントにして残します。既存ファイルは `--force` なしでは上書きしません。
 
 ```toml
 # ./gguf-fit.toml  （または ~/.config/gguf-fit/config.toml、$GGUF_FIT_CONFIG）
@@ -307,6 +353,8 @@ settings in effect (cli > env > config file > default)
 ```
 
 環境変数は同じ名前に `GGUF_FIT_` を付けたものです（`GGUF_FIT_LANG`、`GGUF_FIT_VRAM` など）。
+**実測を設定ファイルより下に置いたのは意図的**です。書いた値がマシンに勝手に上書きされたら、
+書く意味がありません。
 
 > [!TIP]
 > **設定ファイルは最初に見つかった1つだけを使い、マージしません。** 重ねると

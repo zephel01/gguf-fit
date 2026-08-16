@@ -182,3 +182,56 @@ def test_show_config_lists_where_it_looked_when_nothing_found():
 @pytest.mark.parametrize("key", sorted(_config.KNOWN_KEYS))
 def test_every_known_key_has_a_usable_type(key):
     assert callable(_config.KNOWN_KEYS[key])
+
+
+# --- --write-config -------------------------------------------------------
+
+def test_written_toml_can_be_read_back(tmp_path):
+    """書いたものが自分で読めなければ意味がない。往復させて確かめる."""
+    resolved = {
+        "lang": _config.Resolved("ja", "config"),
+        "vram": _config.Resolved(31.8, "detected"),
+        "overhead": _config.Resolved(1.0, "default"),
+        "port": _config.Resolved(8085, "default"),
+        "device": _config.Resolved("CUDA0", "detected"),
+        "threads": _config.Resolved(16, "detected"),
+        "model_path": _config.Resolved(None, "default"),
+    }
+    text = _config.render_toml(resolved, "detected hardware\n  RAM  64.0 GiB")
+    p = tmp_path / "gguf-fit.toml"
+    p.write_text(text, encoding="utf-8")
+
+    cfg, path = _config.load_config(p)
+    assert path == p
+    assert cfg == {"lang": "ja", "vram": 31.8, "overhead": 1.0,
+                   "port": 8085, "device": "CUDA0", "threads": 16}
+
+
+def test_written_toml_records_where_each_value_came_from(tmp_path):
+    resolved = {"vram": _config.Resolved(31.8, "detected"),
+                "port": _config.Resolved(8085, "default")}
+    text = _config.render_toml(resolved)
+    assert "vram = 31.8   # <- detected" in text
+    assert "port = 8085   # <- default" in text
+
+
+def test_unavailable_values_are_commented_out_not_written_as_none(tmp_path):
+    """None をそのまま書くと TOML として壊れる。コメントにして残す."""
+    text = _config.render_toml({"vram": _config.Resolved(None, "default")})
+    assert "vram = ..." in text
+    assert "None" not in text
+    p = tmp_path / "gguf-fit.toml"
+    p.write_text(text, encoding="utf-8")
+    cfg, _ = _config.load_config(p)
+    assert cfg == {}          # 読み返しても壊れない
+
+
+def test_hardware_summary_is_embedded_as_comments(tmp_path):
+    text = _config.render_toml({"vram": _config.Resolved(31.8, "detected")},
+                               "detected hardware\n  GPU 0  RTX 5090  31.8 GiB")
+    assert "# detected hardware" in text
+    assert "#   GPU 0  RTX 5090  31.8 GiB" in text
+    p = tmp_path / "gguf-fit.toml"
+    p.write_text(text, encoding="utf-8")
+    cfg, _ = _config.load_config(p)   # コメントなので読み込みを壊さない
+    assert cfg == {"vram": 31.8}
