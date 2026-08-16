@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 
+import glob
 import os
 import platform
 import re
@@ -55,6 +56,9 @@ class Hardware(NamedTuple):
     physical_cores: int | None
     logical_cores: int | None
     unified_memory: bool  # Apple Silicon のように VRAM と RAM が同じか
+    #: ドライバ (sysfs) が言う VRAM の空き。ランタイムの申告を裏取りするため。
+    #: amdgpu 以外では None
+    driver_free_gib: float | None = None
 
     @property
     def largest_gpu(self) -> Gpu | None:
@@ -101,15 +105,48 @@ class Hardware(NamedTuple):
             return False
         return len(self.gpus) > 1
 
-    def tight_on_free_memory(self) -> Gpu | None:
-        """総量に対して空きが極端に少ないデバイスを返す.
+    def free_figures_disagree(self) -> tuple[Gpu, float] | None:
+        """ランタイムの「空き」がドライバの実測と食い違っていたら返す.
 
-        統合 GPU (Strix Halo など) で実際に見た: 総量 96 GiB に対して
-        空きが 16.3 GiB。総量だけ見て計画すると**載らないものを勧める**。
+        実機 (Strix Halo / Radeon 8060S) で見た値::
+
+            llama-server --list-devices : 98304 MiB total, 16642 MiB free
+            amdgpu_top / sysfs         : VRAM 482 / 98304 MiB used
+                                         GTT   58 /  15860 MiB used
+
+        **VRAM は 96 GiB のうち 482 MiB しか使っていない。**
+        llama.cpp の言う「16642 MiB free」は VRAM の空きではなく、GTT 側
+        (15860 MiB) に対応する数字。APU で ``hipMemGetInfo()`` が返す値の癖。
+
+        ここでランタイム側を信じて「--vram 16 にしろ」と言うと、96 GiB 使える
+        マシンを 16 GiB に切り詰めさせることになる。**逆の助言になる。**
+
+        なので「少ないほうを採る」ことはしない。**食い違っている事実だけを
+        言って、判断は人に返す。**戻り値は (デバイス, ドライバ側の空き)。
+        """
+        big = self.largest_gpu
+        if big is None or big.free_gib is None or self.driver_free_gib is None:
+            return None
+        # ランタイムの空きが、ドライバの実測より目立って小さいとき
+        if big.free_gib < self.driver_free_gib * 0.8:
+            return (big, self.driver_free_gib)
+        return None
+
+    def tight_on_free_memory(self) -> Gpu | None:
+        """本当に空きが少ないデバイス。**裏取りが取れているときだけ言う**.
+
+        ドライバ側でも空きが少ないと確認できた場合に限る。ランタイムの数字
+        だけで判断すると、上の APU のケースで誤った助言をする。
         """
         big = self.largest_gpu
         if big is None or big.free_gib is None:
             return None
+        if self.driver_free_gib is not None:
+            # 裏が取れている。両方が「少ない」と言うときだけ警告する
+            if self.driver_free_gib < big.total_gib * 0.5:
+                return big
+            return None
+        # 裏が取れない場合は、ランタイムの言い分を採る (保守的)
         return big if big.free_gib < big.total_gib * 0.5 else None
 
 
@@ -269,6 +306,29 @@ def detect_cores() -> tuple[int | None, int | None]:
     return None, logical
 
 
+def detect_amd_driver_free_gib() -> float | None:
+    """amdgpu の sysfs から VRAM の空きを読む (GiB)。取れなければ None.
+
+    ランタイム (llama.cpp / HIP) の申告を**裏取りする**ためだけに使う。
+    APU では両者が食い違うことがあり、そこを黙って片方に寄せると事故る。
+    """
+    if not sys.platform.startswith("linux"):
+        return None
+    best = None
+    for path in sorted(glob.glob("/sys/class/drm/card*/device/mem_info_vram_total")):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                total = int(fh.read().strip())
+            with open(path.replace("_total", "_used"), encoding="utf-8") as fh:
+                used = int(fh.read().strip())
+        except (OSError, ValueError):
+            continue
+        free = round((total - used) / 1024 ** 3, 2)
+        if best is None or free > best:
+            best = free
+    return best
+
+
 def is_unified_memory() -> bool:
     """Apple Silicon のように VRAM と RAM が同じ物理メモリか."""
     return sys.platform == "darwin" and platform.machine() in ("arm64", "aarch64")
@@ -281,7 +341,8 @@ def detect(llama_server: str = "llama-server") -> Hardware:
     physical, logical = detect_cores()
     return Hardware(gpus=gpus, ram_gib=detect_ram_gib(),
                     physical_cores=physical, logical_cores=logical,
-                    unified_memory=is_unified_memory() and not gpus)
+                    unified_memory=is_unified_memory() and not gpus,
+                    driver_free_gib=detect_amd_driver_free_gib())
 
 
 def render(hw: Hardware) -> str:

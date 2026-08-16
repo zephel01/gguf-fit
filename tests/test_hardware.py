@@ -345,18 +345,50 @@ def test_missing_free_field_is_tolerated(fake_run):
 
 # --- 総量と空きの乖離 ------------------------------------------------------
 
-def test_integrated_gpu_with_little_free_memory_is_flagged(fake_run):
-    """実機: 総量 96 GiB に対して空き 16.3 GiB。
+def test_runtime_and_driver_free_figures_are_reconciled(fake_run):
+    """実機 (Strix Halo) で踏んだ、危うく逆の助言をしかけたケース.
 
-    総量だけ見て計画すると「載らないもの」を勧めてしまう。
+        llama.cpp : 98304 MiB total / 16642 MiB free
+        amdgpu_top: VRAM 482 / 98304 MiB used  (= 95.5 GiB 空いている)
+                    GTT   58 /  15860 MiB used
+
+    llama.cpp の「16642 free」は VRAM ではなく GTT 側の数字。ここで
+    ランタイムを信じて --vram 16 を勧めると、96 GiB 使えるマシンを
+    16 GiB に切り詰めさせることになる。
     """
     fake_run({"llama-server": LIST_DEVICES_ROCM})
     h = hw.Hardware(gpus=hw.detect_llama_devices(), ram_gib=31.0,
-                    physical_cores=16, logical_cores=32, unified_memory=False)
-    tight = h.tight_on_free_memory()
-    assert tight is not None
-    assert tight.total_gib == 96.0
-    assert tight.free_gib == pytest.approx(16.25, abs=0.01)
+                    physical_cores=16, logical_cores=32, unified_memory=False,
+                    driver_free_gib=95.53)   # sysfs 実測
+    # 「空きが少ない」とは言わない
+    assert h.tight_on_free_memory() is None
+    # 代わりに「食い違っている」とだけ言う
+    disagree = h.free_figures_disagree()
+    assert disagree is not None
+    dev, driver_free = disagree
+    assert dev.total_gib == 96.0
+    assert dev.free_gib == pytest.approx(16.25, abs=0.01)
+    assert driver_free == 95.53
+
+
+def test_a_genuinely_full_card_is_still_flagged():
+    """両方が「少ない」と言うなら、それは本当に少ない."""
+    h = hw.Hardware(gpus=[hw.Gpu(0, "RTX 5090", 31.8, 30.0,
+                                 device_id="CUDA0", free_gib=1.8)],
+                    ram_gib=31.0, physical_cores=16, logical_cores=32,
+                    unified_memory=False, driver_free_gib=1.9)
+    assert h.tight_on_free_memory() is not None
+    assert h.free_figures_disagree() is None
+
+
+def test_without_a_driver_figure_the_runtime_is_believed(fake_run):
+    """裏取りが無ければランタイムの言い分を採る (保守的な側に倒す)."""
+    fake_run({"llama-server": LIST_DEVICES_ROCM})
+    h = hw.Hardware(gpus=hw.detect_llama_devices(), ram_gib=31.0,
+                    physical_cores=16, logical_cores=32, unified_memory=False,
+                    driver_free_gib=None)
+    assert h.tight_on_free_memory() is not None
+    assert h.free_figures_disagree() is None
 
 
 def test_a_mostly_idle_card_is_not_flagged(fake_run):

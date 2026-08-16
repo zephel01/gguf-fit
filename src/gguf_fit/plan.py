@@ -345,6 +345,13 @@ def main() -> int:
     # 実測が取れているのに指定値と 食い違うなら、そう言う。
     # 総量は足りていても、いま空いていなければ載らない。
     # 統合GPUで実際に見た: 総量 96 GiB / 空き 16.3 GiB。
+    disagree = hw.free_figures_disagree()
+    if disagree is not None:
+        dev, driver_free = disagree
+        print("# " + t("warn_free_disagrees", lang, name=dev.name,
+                       runtime=dev.free_gib, driver=driver_free,
+                       total=dev.total_gib), file=sys.stderr)
+
     tight = hw.tight_on_free_memory()
     if tight is not None:
         print("# " + t("warn_low_free", lang, name=tight.name,

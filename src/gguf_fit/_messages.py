@@ -211,6 +211,16 @@ MESSAGES: dict[str, dict[str, str]] = {
               "{free:.1f} GiB です。以下の計画は総量で立てています。空けるか、"
               "--vram {free:.0f} で実際に使える分に合わせてください",
     },
+    "warn_free_disagrees": {
+        "en": "note: llama.cpp reports {runtime:.1f} GiB free on {name}, but the "
+              "driver reports {driver:.1f} GiB. On integrated GPUs the runtime "
+              "figure often tracks GTT, not the VRAM carve-out. Planning against "
+              "the {total:.1f} GiB total -- confirm by actually loading.",
+        "ja": "参考: llama.cpp は {name} の空きを {runtime:.1f} GiB と言って"
+              "いますが、ドライバは {driver:.1f} GiB と言っています。統合GPU では"
+              "ランタイム側が VRAM ではなく GTT を見ていることがあります。"
+              "総量 {total:.1f} GiB で計画します -- 実際に載せて確かめてください",
+    },
     "help_llama_server": {
         "en": "path to llama-server, used for --list-devices "
               "(default: llama-server on PATH)",
