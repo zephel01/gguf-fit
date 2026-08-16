@@ -1,0 +1,100 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "gguf-fit"
+version = "0.1.0"
+description = "Decide llama-server settings by reading the GGUF — without running a single token"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "zephel01" }]
+keywords = ["gguf", "llama.cpp", "llm", "vram", "quantization", "kv-cache"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+# gguf は「実際に GGUF ファイルを開くとき」にだけ要る。
+# 分類ロジックと VRAM 計算は純粋関数なので、これ無しでも import できる
+# (テストもそこを突いている)。よって必須依存にしてある一方、
+# probe 側の import は遅延させてある。
+dependencies = [
+    "gguf>=0.10",
+    # 設定ファイルは TOML。tomllib は 3.11 から標準なので、3.10 だけ tomli を使う。
+    'tomli>=2; python_version < "3.11"',
+]
+
+# 開発用の依存は PEP 735 の dependency-groups に置く。
+# uv sync がこれを既定で入れる (--extra を付ける必要がない)。
+# pip 25.1 以降なら pip install -e . --group dev でも入る。
+#
+# ruff はマイナー更新で**既定ルールが増える**。0.15 で通ったコードが 0.16 で
+# 10 件出た。下の [tool.ruff.lint] でルールを明示しているうえに、ここでも
+# マイナーを固定する。上げるときは意図して上げること (CI が勝手に赤くならない)。
+[dependency-groups]
+dev = ["pytest>=8,<10", "ruff>=0.16.3,<0.17"]
+
+[project.urls]
+Homepage = "https://github.com/zephel01/gguf-fit"
+Issues = "https://github.com/zephel01/gguf-fit/issues"
+
+[project.scripts]
+gguf-probe = "gguf_fit.probe:main"
+gguf-plan = "gguf_fit.plan:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gguf_fit"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+# ruff の**既定ルールセットはバージョンで変わる**。実際 0.15 で "All checks passed"
+# だったものが 0.16 で 10 件出た。CI は最新の ruff を入れるので、固定しないと
+# 「コードを触っていないのに CI が落ちる」が起きる。明示的に選ぶこと。
+[tool.ruff.lint]
+select = [
+    "E", "W",    # pycodestyle
+    "F",         # pyflakes
+    "I",         # import の並び
+    "UP",        # 古い書き方
+    "B",         # bugbear
+    "C4",        # 内包表記
+    "SIM",       # 単純化できる分岐
+    "ISC",       # 暗黙の文字列結合 (カンマ忘れの検出)
+    "EXE",       # shebang と実行権限の不一致
+    "BLE",       # 包括 except (意図的な箇所は noqa で理由を書く)
+    "RUF",
+    "PL",        # pylint 相当
+]
+ignore = [
+    # --- 日本語で書いてあるので当たらないルール ---
+    # RUF001/002/003 は「全角括弧などが半角と紛らわしい」という警告で、
+    # 英語のコードに混入した全角文字を見つけるためのもの。本文が日本語の
+    # このリポジトリでは全部が誤検出になる (61件出た)。
+    "RUF001", "RUF002", "RUF003",
+
+    # --- 設計上そうなっている ---
+    "PLR0911",  # return が多い: _val() は GGUF の型ごとに分岐する
+    "PLR0912",  # 分岐が多い: probe / render は仕様がそうなっている
+    "PLR0913",  # 引数が多い: emit_config は意図的に明示引数
+    "PLR0917",  # 位置引数が多い: 同上
+    "PLR0915",  # 文が多い
+    "PLR2004",  # マジックナンバー: 単位換算はその場に数字がある方が読める
+]
+
+[tool.ruff.lint.per-file-ignores]
+# テストは実測値をそのまま書くのが読みやすい
+"tests/*" = ["PLR2004"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

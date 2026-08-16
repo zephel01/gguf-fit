@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# 仮想環境
+.venv/
+venv/
+
+# ツールキャッシュ
+.ruff_cache/
+.pytest_cache/
+
+# このツールの出力 (実行した場所に溜まる)
+gguf.json
+gguf_report.txt
+*.gguf
+
+# OS
+.DS_Store
