@@ -263,12 +263,15 @@ gguf-plan gguf.json --vram 24 --pick Q5_K_M --ctx 131072 --target lmstudio
 
 The estimate, headroom warning, and "measured vs. derived KV" line are identical across all
 three targets — only the launch format changes. Neither Ollama's `Modelfile` nor LM Studio's
-documented load interface exposes everything `llama-server`'s CLI does, and this tool does not
-fill the gap by guessing:
+documented load interface exposes everything `llama-server`'s CLI does. `llama-server` gets the
+exact flags; the other two get the best approximate number available, clearly labeled as such:
 
-* **GPU layer count** — Ollama decides offload itself (no `num_gpu`/`num_thread` in the
-  `Modelfile` parameter list); LM Studio's load API and `lms` CLI only take a 0–1 fraction
-  (`lms load --gpu 0.5`), not a layer count. Neither output sets one.
+* **GPU layer count** — `num_gpu` was dropped from `docs.ollama.com/modelfile`, but Ollama's own
+  maintainers confirm it still works ([ollama/ollama#13986](https://github.com/ollama/ollama/issues/13986)).
+  gguf-fit only ever plans full offload, so the `Modelfile` sets `PARAMETER num_gpu 99` as an
+  approximate, best-effort hint (mirroring `-ngl 99`) — not a guarantee. LM Studio's load API and
+  `lms` CLI only take a 0–1 fraction (`lms load --gpu 0.5`), no layer count at all, so its output
+  sticks to `--gpu max` and adds the total layer count as a comment for context.
 * **KV cache quantization (`q8_0`)** — Ollama controls this with the server-wide
   `OLLAMA_KV_CACHE_TYPE` environment variable, not per model; the emitted `Modelfile` says so
   instead of inventing a `PARAMETER` for it. LM Studio's documented load API/CLI has no

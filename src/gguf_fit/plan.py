@@ -353,8 +353,16 @@ def emit_ollama(rec: dict, ctx: int, kv_mode: str, vram: float, overhead: float,
     """Modelfile を出す.
 
     **Ollama の Modelfile には、llama-server の全部が書けるわけではない。**
-    公式ドキュメント (docs.ollama.com/modelfile) の PARAMETER 一覧に
-    num_gpu / num_thread は無い。GPU に何層乗せるかは Ollama 自身が決める。
+    公式ドキュメント (docs.ollama.com/modelfile) の PARAMETER 一覧から
+    num_gpu / num_thread は消えている。GPU に何層乗せるかは既定では Ollama
+    自身が決める。
+
+    ただし ``num_gpu`` は**ドキュメントから消えただけで、いまも動く**
+    (github.com/ollama/ollama#13986 で ollama 側が認めている: 「e54a3c7 で
+    ドキュメントから消したが機能は残した」)。gguf-fit が計画するのは常に
+    全層オフロード (llama-server 側の `-ngl 99` と同じ) なので、**目安として**
+    大きめの値を書いておく。非公式なので保証はしない、とコメントに残す。
+    num_thread のほうは同種の裏付けが取れていないので書かない。
 
     KV キャッシュの型 (f16/q8_0) も Modelfile には書けない。決めるのは
     ``OLLAMA_KV_CACHE_TYPE`` という**サーバ全体の環境変数**で、モデルごとには
@@ -373,7 +381,7 @@ def emit_ollama(rec: dict, ctx: int, kv_mode: str, vram: float, overhead: float,
     L = _header_lines(rec, ctx, kv_mode, vram, overhead, lang, calibrated)
     L.append("")
     L.append("# " + t("sec_ollama", lang))
-    L.append("# " + t("note_ollama_no_gpu_layers", lang))
+    L.append("# " + t("note_ollama_num_gpu_undocumented", lang))
     if kv_mode == "q8_0":
         L.append("# " + t("note_ollama_kv_is_global", lang))
     if mtp:
@@ -381,6 +389,7 @@ def emit_ollama(rec: dict, ctx: int, kv_mode: str, vram: float, overhead: float,
     L.append("")
     L.append(f"FROM {model_path}")
     L.append(f"PARAMETER num_ctx {ctx}")
+    L.append("PARAMETER num_gpu 99   # " + t("cfg_num_gpu_approx", lang))
     for k, v in samp.items():
         L.append(f"PARAMETER {k} {v}")
     L.append("")
@@ -405,6 +414,10 @@ def emit_lmstudio(rec: dict, ctx: int, kv_mode: str, vram: float, overhead: floa
     公開インターフェースのどちらにも見当たらない。**GUI 側には項目がある
     かもしれないが確認していないので、無いものとして扱う。kv_mode が
     q8_0 のときは、その前提が LM Studio では満たせないかもしれないと書く。
+
+    層数そのものは JSON のキーとしては書かない (でっち上げになる) が、
+    ``--gpu max`` が結局何層ぶんの話をしているかは**目安として**コメントに
+    残す。GGUF のテンソル一覧から数えた総層数がその値。
     """
     import json as _json  # noqa: PLC0415 - この関数でしか使わない
 
@@ -412,6 +425,9 @@ def emit_lmstudio(rec: dict, ctx: int, kv_mode: str, vram: float, overhead: floa
     L.append("")
     L.append("# " + t("sec_lmstudio", lang))
     L.append("# " + t("note_lmstudio_no_gpu_layers", lang))
+    n_layers = (rec.get("kv_cache") or {}).get("total_layers")
+    if n_layers:
+        L.append("# " + t("note_lmstudio_layer_count", lang, n=n_layers))
     if kv_mode == "q8_0":
         L.append("# " + t("note_lmstudio_kv_unsupported", lang))
     body = {

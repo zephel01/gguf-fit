@@ -301,13 +301,24 @@ MESSAGES: dict[str, dict[str, str]] = {
         "en": "--- Ollama Modelfile ---",
         "ja": "--- Ollama Modelfile ---",
     },
-    "note_ollama_no_gpu_layers": {
-        "en": "Ollama decides GPU offload itself; the Modelfile has no "
-              "num_gpu/num_thread parameter to set it with (checked against "
-              "docs.ollama.com/modelfile), so none is written here",
-        "ja": "GPU に何層乗せるかは Ollama 自身が決める。Modelfile には "
-              "num_gpu/num_thread に相当する項目が無いので (docs.ollama.com/"
-              "modelfile で確認)、ここには書かない",
+    "note_ollama_num_gpu_undocumented": {
+        "en": "Ollama decides GPU offload itself by default. num_gpu was "
+              "dropped from docs.ollama.com/modelfile but Ollama's own "
+              "maintainers confirm it still works (github.com/ollama/ollama"
+              "#13986). gguf-fit only ever plans full offload, so num_gpu is "
+              "set high as an approximate hint -- treat it as best-effort, "
+              "not guaranteed. num_thread has no such confirmation, so it is "
+              "left out",
+        "ja": "GPU に何層乗せるかは既定では Ollama 自身が決める。num_gpu は "
+              "docs.ollama.com/modelfile から消えたが、Ollama 側が「機能は "
+              "残っている」と認めている (github.com/ollama/ollama#13986)。"
+              "gguf-fit は全層オフロードしか計画しないので、num_gpu は目安として "
+              "大きめに設定してある -- 保証はしない。num_thread は同様の裏付けが "
+              "取れていないので出さない",
+    },
+    "cfg_num_gpu_approx": {
+        "en": "approximate; undocumented but still works as of ollama/ollama#13986",
+        "ja": "目安。非公式だが ollama/ollama#13986 の時点では動作する",
     },
     "note_ollama_kv_is_global": {
         "en": "this plan assumes q8_0 KV, but Ollama has no per-model KV cache "
@@ -343,6 +354,13 @@ MESSAGES: dict[str, dict[str, str]] = {
               "lms CLI を確認したが、どちらも GPU に何層乗せるかは指定できず、 "
               "lms load --gpu は 0〜1 の割合を渡すだけなので、下の JSON には "
               "書いていない",
+    },
+    "note_lmstudio_layer_count": {
+        "en": "{n} layers total (counted from the tensor list) -- --gpu max / "
+              "offload_kv_cache_to_gpu below already assume all of them go to "
+              "the GPU",
+        "ja": "全 {n} 層 (テンソル一覧から数えた数) -- 下の --gpu max / "
+              "offload_kv_cache_to_gpu はこの全部を GPU に乗せる前提",
     },
     "note_lmstudio_kv_unsupported": {
         "en": "this plan assumes q8_0 KV to fit the budget, but neither the "

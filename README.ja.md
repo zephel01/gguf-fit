@@ -274,12 +274,16 @@ gguf-plan gguf.json --vram 24 --pick Q5_K_M --ctx 131072 --target lmstudio
 
 見積り・余りの警告・「実測値か計算値か」の行は3形式とも同じです。変わるのは起動設定の
 書式だけ。ただし Ollama の `Modelfile` も LM Studio の公開インターフェースも、
-`llama-server` の CLI 全部を書けるわけではありません。ここは**推測で埋めません**。
+`llama-server` の CLI 全部を書けるわけではありません。`llama-server` には正確な値を、
+残り2つには**目安と分かる形で**出せる範囲の近似値を出します。
 
-* **GPU に何層乗せるか** — Ollama は自分で決めます（`Modelfile` の PARAMETER 一覧に
-  `num_gpu`/`num_thread` は無い）。LM Studio のロード API と `lms` CLI は 0〜1 の割合
-  （`lms load --gpu 0.5`）しか受け付けず、層数そのものは指定できません。どちらの出力にも
-  書きません。
+* **GPU に何層乗せるか** — `num_gpu` は `docs.ollama.com/modelfile` から消えましたが、
+  Ollama 側が「機能は残っている」と認めています
+  ([ollama/ollama#13986](https://github.com/ollama/ollama/issues/13986))。gguf-fit は
+  全層オフロードしか計画しないので、`Modelfile` には目安として `PARAMETER num_gpu 99`
+  （`-ngl 99` と同じ考え方）を書きます — 保証はしません。LM Studio のロード API と
+  `lms` CLI は 0〜1 の割合（`lms load --gpu 0.5`）しか受け付けず、層数そのものは指定
+  できないので、出力は `--gpu max` のままにして、総層数はコメントとして添えます。
 * **KV キャッシュの量子化（`q8_0`）** — Ollama で決めるのはサーバ全体の環境変数
   `OLLAMA_KV_CACHE_TYPE` で、モデル単位ではありません。出力する `Modelfile` は存在しない
   PARAMETER をでっち上げる代わりに、そう明記します。LM Studio の公開ロード API・CLI には

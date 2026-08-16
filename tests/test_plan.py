@@ -462,17 +462,23 @@ def test_ollama_modelfile_carries_the_same_sampling_as_llama_server():
     assert "PARAMETER top_p 0.8" in non_think
 
 
-def test_ollama_modelfile_never_claims_a_gpu_layer_parameter():
-    """num_gpu は公式の PARAMETER 一覧に無い。**PARAMETER行として**書いたら嘘になる.
+def test_ollama_modelfile_sets_num_gpu_as_an_approximate_hint():
+    """num_gpu は docs には無いが実際は動く (ollama/ollama#13986)。**目安として**出す.
 
-    注記のコメント文では「無い」と説明するために num_gpu/-ngl の名前そのものが
-    出てくるので、単純な in 判定では区別できない。実際に指令として
-    出ていないことを見る。
+    gguf-fit は全層オフロードしか計画しないので -ngl 99 と同じ考え方で大きめの
+    値にする。「保証はしない」の一言をコメントに残すことが条件。
     """
+    out = emit_ollama()
+    assert any(ln.strip().startswith("PARAMETER num_gpu 99")
+              for ln in out.splitlines())
+    assert "#13986" in out or "approximate" in out.lower() or "目安" in out
+
+
+def test_ollama_modelfile_still_has_no_num_thread_or_llama_server_flags():
+    """num_thread は裏付けが無いので出さない。--device/-ngl も llama-server 専用."""
     out = emit_ollama()
     for line in out.splitlines():
         s = line.strip()
-        assert not s.startswith("PARAMETER num_gpu")
         assert not s.startswith("PARAMETER num_thread")
         assert not s.startswith("-ngl")
         assert not s.startswith("--device")
@@ -532,6 +538,19 @@ def test_lmstudio_never_claims_a_gpu_layer_count_or_kv_type_key():
     out = emit_lmstudio(kv="q8_0")
     for bad_key in ("gpu_layers", "n_gpu_layers", "kv_cache_type", "ctk", "ctv"):
         assert bad_key not in out
+
+
+def test_lmstudio_mentions_the_layer_count_as_context_only():
+    """層数はJSONのキーにはしないが、目安としてコメントには残す."""
+    out = emit_lmstudio()
+    comment_lines = [ln for ln in out.splitlines() if ln.strip().startswith("#")]
+    assert any("65" in ln for ln in comment_lines), "総層数がコメントに出ていない"
+
+    start = out.index("{")
+    end = out.rindex("}") + 1
+    body = json.loads(out[start:end])
+    assert set(body) == {"model", "context_length", "eval_batch_size",
+                         "flash_attention", "offload_kv_cache_to_gpu"}
 
 
 def test_lmstudio_warns_when_the_plan_needs_q8_kv():
