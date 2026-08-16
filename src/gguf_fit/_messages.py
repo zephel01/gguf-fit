@@ -222,10 +222,20 @@ MESSAGES: dict[str, dict[str, str]] = {
               "総量 {total:.1f} GiB で計画します -- 実際に載せて確かめてください",
     },
     "help_llama_server": {
-        "en": "path to llama-server, used for --list-devices "
-              "(default: llama-server on PATH)",
-        "ja": "llama-server のパス。--list-devices の取得に使います "
-              "(既定: PATH 上の llama-server)",
+        "en": "path(s) to llama-server for --list-devices; repeat or comma-separate "
+              "to cover several builds (default: llama-server on PATH)",
+        "ja": "llama-server のパス。--list-devices に使います。カンマ区切りで"
+              "複数のビルドを指定できます (既定: PATH 上の llama-server)",
+    },
+    "hint_no_devices": {
+        "en": "no GPU detected. llama.cpp shows only the backends its build was "
+              "compiled with, so a CUDA build never lists ROCm or Vulkan devices. "
+              "Point --llama-server (or llama_servers in the config) at the builds "
+              "you actually use.",
+        "ja": "GPU が検出できませんでした。llama.cpp はビルドに含まれる"
+              "バックエンドしか出さないので、CUDA ビルドからは ROCm や Vulkan の"
+              "デバイスは見えません。--llama-server (または設定の llama_servers) で"
+              "実際に使うビルドを指してください",
     },
     "warn_vram_mismatch": {
         "en": "!! vram {given:.1f} GiB came from {source}, but this machine reports "

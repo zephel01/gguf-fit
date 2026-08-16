@@ -36,6 +36,25 @@ lang = "ja"
 # overhead = 1.0
 
 
+# ---- GPU の検出 -----------------------------------------------------------
+
+# GPU は `llama-server --list-devices` から拾います。llama.cpp 自身が認識して
+# いる値なので、--device に書く識別子 (CUDA0 / ROCm0 / Vulkan0 ...) もここから
+# 取れます。
+#
+# **llama.cpp はビルドに含まれるバックエンドしか出しません。**
+# build-cuda の --list-devices に ROCm のデバイスは出ないので、複数のビルドを
+# 使い分けているマシンでは全部並べてください。並べないと、実在する GPU を
+# 見落とします。
+# llama_servers = [
+#   "/home/you/llm/apps/llama.cpp/build-cuda/bin/llama-server",
+#   "/home/you/llm/apps/llama.cpp/build-rocm/bin/llama-server",
+# ]
+
+# 1本だけならこちらでも構いません
+# llama_server = "/usr/local/bin/llama-server"
+
+
 # ---- 生成される起動コマンド ----------------------------------------------
 
 # llama-server の --threads。**書かなければ物理コア数を自動検出**します。

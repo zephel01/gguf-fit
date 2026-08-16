@@ -52,6 +52,7 @@ KNOWN_KEYS: dict[str, type] = {
     "port": int,
     "threads": int,
     "llama_server": str,
+    "llama_servers": list,
     "model_path": str,
 }
 
@@ -107,7 +108,8 @@ def load_config(explicit: str | os.PathLike | None = None) -> tuple[dict, Path |
                 continue
             want = KNOWN_KEYS[key]
             try:
-                cleaned[key] = want(value)
+                cleaned[key] = ([str(x) for x in value] if want is list
+                                else want(value))
             except (TypeError, ValueError):
                 print(f"!! {path}: {key!r} should be {want.__name__} (ignored)",
                       file=sys.stderr)
@@ -129,7 +131,10 @@ def resolve(key: str, cli_value: Any, config: dict, default: Any = None,
     if env_raw:
         want = KNOWN_KEYS.get(key, str)
         try:
-            return Resolved(want(env_raw), "env")
+            # リストは環境変数ではカンマ区切りで渡す
+            value = ([x.strip() for x in env_raw.split(",") if x.strip()]
+                     if want is list else want(env_raw))
+            return Resolved(value, "env")
         except (TypeError, ValueError):
             print(f"!! {ENV_PREFIX}{key.upper()}={env_raw!r} is not a "
                   f"{want.__name__} (ignored)", file=sys.stderr)
@@ -196,8 +201,10 @@ def render_toml(resolved: dict[str, Resolved], hw_summary: str = "") -> str:
             continue
         if isinstance(r.value, str):
             value = f'"{r.value}"'
+        elif isinstance(r.value, list):
+            value = "[" + ", ".join(f'"{x}"' for x in r.value) + "]"
         elif isinstance(r.value, float):
-            # 31.8427734375 のような値をそのまま書かない
+            # 31.8427734375 のような生値をそのまま書かない
             value = repr(round(r.value, 2))
         else:
             value = repr(r.value)

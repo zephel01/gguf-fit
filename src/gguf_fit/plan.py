@@ -283,8 +283,8 @@ def main() -> int:
     ap.add_argument("--device", default=None)
     ap.add_argument("--threads", type=int, default=None,
                     help=t("help_threads", DEFAULT_LANG))
-    ap.add_argument("--llama-server", default=None, dest="llama_server",
-                    help=t("help_llama_server", DEFAULT_LANG))
+    ap.add_argument("--llama-server", action="append", default=None,
+                    dest="llama_server", help=t("help_llama_server", DEFAULT_LANG))
     ap.add_argument("--lang", default=None, choices=["en", "ja"],
                     help=t("help_lang", DEFAULT_LANG))
     ap.add_argument("--config", default=None,
@@ -300,8 +300,17 @@ def main() -> int:
     args = ap.parse_args()
 
     cfg, cfg_path = load_config(args.config)
-    r_llama = resolve("llama_server", args.llama_server, cfg, "llama-server")
-    hw = _hardware.detect(str(r_llama.value))
+    # --llama-server は複数回渡せる。カンマ区切りも受ける。
+    cli_bins = None
+    if args.llama_server:
+        cli_bins = [x.strip() for a in args.llama_server
+                    for x in a.split(",") if x.strip()]
+    r_llama = resolve("llama_servers", cli_bins, cfg)
+    if r_llama.value is None:
+        # 単数形のキー / 環境変数にも対応する
+        single = resolve("llama_server", None, cfg, "llama-server")
+        r_llama = single._replace(value=[single.value])
+    hw = _hardware.detect(r_llama.value)
     r_lang = resolve("lang", args.lang, cfg, DEFAULT_LANG)
     r_vram = resolve("vram", args.vram, cfg, detected=hw.suggested_vram_gib())
     r_overhead = resolve("overhead", args.overhead, cfg, DEFAULT_OVERHEAD_GIB)
@@ -314,12 +323,15 @@ def main() -> int:
 
     settings = {"lang": r_lang, "vram": r_vram, "overhead": r_overhead,
                 "port": r_port, "device": r_device, "threads": r_threads,
-                "llama_server": r_llama, "model_path": r_model_path}
+                "llama_servers": r_llama, "model_path": r_model_path}
 
     if args.show_config:
         print(render_show_config(settings, cfg_path))
         print()
         print(_hardware.render(hw))
+        if not hw.gpus:
+            print()
+            print(t("hint_no_devices", r_lang.value))
         return 0
 
     if args.write_config:
@@ -337,6 +349,7 @@ def main() -> int:
     if not args.json_path:
         ap.error("json_path is required")
     if r_vram.value is None:
+        print("# " + t("hint_no_devices", lang), file=sys.stderr)
         ap.error("could not detect any GPU, so --vram is required "
                  "(or set vram in the config file)")
     vram, overhead = float(r_vram.value), float(r_overhead.value)

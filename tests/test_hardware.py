@@ -434,3 +434,49 @@ def test_apple_silicon_is_handled_by_its_own_path():
     h = hw.Hardware(gpus=[], ram_gib=64.0, physical_cores=16, logical_cores=16,
                     unified_memory=True)
     assert h.carved_out_from_system_memory() is None
+
+
+# --- 複数ビルドの走査 ------------------------------------------------------
+
+def test_one_build_cannot_see_another_backend(fake_run, monkeypatch):
+    """build-cuda の --list-devices に ROCm は出ない。1本だけだと見落とす."""
+    calls = {"/b/build-cuda/bin/llama-server": LIST_DEVICES_CUDA,
+             "/b/build-rocm/bin/llama-server": LIST_DEVICES_ROCM}
+    monkeypatch.setattr(hw, "_run", lambda cmd: calls.get(cmd[0]))
+
+    cuda_only = hw.detect_all_llama_devices(["/b/build-cuda/bin/llama-server"])
+    assert [g.device_id for g in cuda_only] == ["CUDA0", "CUDA1"]   # ROCm が消える
+
+    both = hw.detect_all_llama_devices(list(calls))
+    assert [g.device_id for g in both] == ["CUDA0", "CUDA1", "ROCm0"]
+
+
+def test_each_device_records_which_build_reported_it(monkeypatch):
+    calls = {"/b/cuda": LIST_DEVICES_CUDA, "/b/rocm": LIST_DEVICES_ROCM}
+    monkeypatch.setattr(hw, "_run", lambda cmd: calls.get(cmd[0]))
+    gpus = hw.detect_all_llama_devices(["/b/cuda", "/b/rocm"])
+    by_id = {g.device_id: g.reported_by for g in gpus}
+    assert by_id["CUDA0"] == "/b/cuda"
+    assert by_id["ROCm0"] == "/b/rocm"
+
+
+def test_the_same_device_seen_twice_is_not_duplicated(monkeypatch):
+    """Vulkan ビルドと ROCm ビルドが同じカードを見ることがある."""
+    monkeypatch.setattr(hw, "_run", lambda cmd: LIST_DEVICES_CUDA)
+    gpus = hw.detect_all_llama_devices(["/b/one", "/b/two", "/b/three"])
+    assert len(gpus) == 2
+
+
+def test_missing_binaries_are_skipped_quietly(monkeypatch):
+    calls = {"/b/rocm": LIST_DEVICES_ROCM}
+    monkeypatch.setattr(hw, "_run", lambda cmd: calls.get(cmd[0]))
+    gpus = hw.detect_all_llama_devices(["/nope", "/b/rocm", "/also-nope"])
+    assert [g.device_id for g in gpus] == ["ROCm0"]
+
+
+def test_detect_accepts_a_single_string_too(monkeypatch):
+    monkeypatch.setattr(hw, "_run", lambda cmd: LIST_DEVICES_ROCM)
+    monkeypatch.setattr(hw, "detect_ram_gib", lambda: 31.0)
+    monkeypatch.setattr(hw, "detect_cores", lambda: (16, 32))
+    monkeypatch.setattr(hw, "detect_amd_driver_free_gib", lambda: None)
+    assert [g.device_id for g in hw.detect("llama-server").gpus] == ["ROCm0"]

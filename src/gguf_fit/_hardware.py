@@ -30,6 +30,7 @@ import re
 import shutil
 import subprocess
 import sys
+from collections.abc import Sequence
 from typing import NamedTuple
 
 #: Apple Silicon で GPU に回せると見なす割合
@@ -48,6 +49,9 @@ class Gpu(NamedTuple):
     device_id: str | None = None
     #: いま空いている量。--list-devices から取れたときだけ入る
     free_gib: float | None = None
+    #: このデバイスを報告した llama-server のパス。
+    #: **ビルドごとに見えるデバイスが違う** (build-cuda は CUDA しか見えない)
+    reported_by: str | None = None
 
 
 class Hardware(NamedTuple):
@@ -357,10 +361,31 @@ def is_unified_memory() -> bool:
     return sys.platform == "darwin" and platform.machine() in ("arm64", "aarch64")
 
 
-def detect(llama_server: str = "llama-server") -> Hardware:
+def detect_all_llama_devices(binaries: Sequence[str]) -> list[Gpu]:
+    """**複数のビルド**を順に叩いて、見えるデバイスを全部集める.
+
+    llama.cpp はビルドごとにバックエンドが別なので、``build-cuda`` の
+    ``--list-devices`` には CUDA しか出ず、ROCm や Vulkan のデバイスは
+    **丸ごと見えない**。1本しか指定できないと、そのマシンに実在する GPU を
+    見落とす。実機 (CUDA 2枚 + ROCm 1枚) で問題になった。
+
+    同じデバイスが複数のビルドから見えることもあるので
+    (識別子, 名前) で重複を除く。
+    """
+    seen: dict[tuple[str | None, str], Gpu] = {}
+    for binary in binaries:
+        for g in detect_llama_devices(binary):
+            key = (g.device_id, g.name)
+            if key not in seen:
+                seen[key] = g._replace(reported_by=binary)
+    return list(seen.values())
+
+
+def detect(llama_server: str | Sequence[str] = "llama-server") -> Hardware:
     """このマシンを一度だけ調べる。**失敗しても例外は出さない**."""
+    binaries = [llama_server] if isinstance(llama_server, str) else list(llama_server)
     # llama.cpp が名乗る値を優先。無ければ nvidia-smi に落とす。
-    gpus = detect_llama_devices(llama_server) or detect_gpus()
+    gpus = detect_all_llama_devices(binaries) or detect_gpus()
     physical, logical = detect_cores()
     return Hardware(gpus=gpus, ram_gib=detect_ram_gib(),
                     physical_cores=physical, logical_cores=logical,
@@ -377,6 +402,8 @@ def render(hw: Hardware) -> str:
             detail = (f"{g.free_gib:.1f} free" if g.free_gib is not None
                       else f"{g.used_gib:.1f} used")
             lines.append(f"  {label:<11} {g.name}  {g.total_gib:.1f} GiB ({detail})")
+            if g.reported_by and len(hw.gpus) > 1:
+                lines.append(f"              via {g.reported_by}")
     elif hw.unified_memory:
         lines.append("  GPU         none; Apple Silicon unified memory")
     else:
