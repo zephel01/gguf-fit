@@ -72,6 +72,29 @@ class Hardware(NamedTuple):
             return round(self.ram_gib * UNIFIED_MEMORY_SHARE, 1)
         return None
 
+    def carved_out_from_system_memory(self) -> float | None:
+        """VRAM がシステムメモリからの切り出しなら、合計の実装量 (GiB) を返す.
+
+        AMD Strix Halo (AI MAX+ 395) の実機で確認した構成::
+
+            実装 128 GB
+              ├─ 96.0 GiB  BIOS で VRAM に割り当て
+              └─ 31.0 GiB  OS から見えるぶん
+
+        ``RAM 31.0 GiB`` だけを見ると「メモリの少ない機械」に見えるが、実際は
+        96 GiB を GPU に渡した後の残り。**両者は同じ物理メモリを分けたもの**で、
+        BIOS で割合を変えられる。この関係が見えないと誤解するので出す。
+
+        判定は「VRAM がシステムメモリ以上」。専用メモリのカードでこうなる構成は
+        現実にはほぼ無い (96 GiB のカードに 31 GiB のシステムメモリ、など)。
+        """
+        big = self.largest_gpu
+        if big is None or self.ram_gib is None or self.unified_memory:
+            return None
+        if big.total_gib < self.ram_gib:
+            return None
+        return round(big.total_gib + self.ram_gib, 1)
+
     def suggested_threads(self) -> int | None:
         """``--threads`` の既定。物理コアを優先し、無ければ論理コア."""
         return self.physical_cores or self.logical_cores
@@ -360,6 +383,10 @@ def render(hw: Hardware) -> str:
         lines.append("  GPU         not detected (no nvidia-smi)")
     lines.append(f"  RAM         {hw.ram_gib:.1f} GiB" if hw.ram_gib
                  else "  RAM         not detected")
+    carved = hw.carved_out_from_system_memory()
+    if carved is not None:
+        lines.append(f"              (VRAM + RAM = {carved:.1f} GiB shared pool; "
+                     f"the split is set in firmware)")
     cores = "  CPU         "
     if hw.physical_cores:
         cores += f"{hw.physical_cores} physical"

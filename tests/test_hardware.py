@@ -403,3 +403,34 @@ def test_nothing_is_flagged_without_a_free_figure():
     h = hw.Hardware(gpus=[hw.Gpu(0, "RTX 5090", 31.8, 21.8)], ram_gib=31.0,
                     physical_cores=16, logical_cores=32, unified_memory=False)
     assert h.tight_on_free_memory() is None
+
+
+# --- BIOS で切り出した VRAM ------------------------------------------------
+
+def test_carve_out_is_recognised():
+    """実機 (AI MAX+ 395): 実装 128GB を VRAM 96 + OS 31 に分けている.
+
+    RAM 31.0 GiB だけ見ると「メモリの少ない機械」に見えるが、そうではない。
+    """
+    h = hw.Hardware(gpus=[hw.Gpu(0, "AMD Radeon 8060S Graphics", 96.0, 0.5,
+                                 device_id="ROCm0", free_gib=16.25)],
+                    ram_gib=31.0, physical_cores=16, logical_cores=32,
+                    unified_memory=False, driver_free_gib=95.5)
+    assert h.carved_out_from_system_memory() == 127.0
+    assert "shared pool" in hw.render(h)
+
+
+def test_a_discrete_card_is_not_treated_as_a_carve_out():
+    """5090 (31.8) + システム 31.0 は切り出しではない (VRAM < RAM ではないが僅差)."""
+    h = hw.Hardware(gpus=[hw.Gpu(0, "RTX 3090", 24.0, 0.3)],
+                    ram_gib=64.0, physical_cores=16, logical_cores=32,
+                    unified_memory=False)
+    assert h.carved_out_from_system_memory() is None
+    assert "shared pool" not in hw.render(h)
+
+
+def test_apple_silicon_is_handled_by_its_own_path():
+    """統合メモリは別の扱いなので、ここでは二重に言わない."""
+    h = hw.Hardware(gpus=[], ram_gib=64.0, physical_cores=16, logical_cores=16,
+                    unified_memory=True)
+    assert h.carved_out_from_system_memory() is None
