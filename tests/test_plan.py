@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from gguf_fit import plan as gguf_plan
@@ -422,3 +424,172 @@ def test_the_output_says_where_the_number_came_from():
     assert "69.1 KB/token" in measured
     assert "derived from the GGUF" in derived
     assert "68.0 KB/token" in derived
+
+
+# --- Ollama / LM Studio (--target) ----------------------------------------
+#
+# Ollama の Modelfile と LM Studio のロード設定は、llama-server の全部が
+# 書けるわけではない。書けないもの (GPU層数、KVの型、MTP) を勝手に補って
+# 「対応した」ことにしないのがここでのテストの主眼。
+
+def emit_ollama(rec=Q5_K_M, ctx=65536, kv="f16", lang="en", calibrated=None):
+    return gguf_plan.emit_ollama(rec, ctx, kv, vram=24.0, overhead=1.0,
+                                 model_path="/m/x.gguf", lang=lang,
+                                 calibrated=calibrated)
+
+
+def emit_lmstudio(rec=Q5_K_M, ctx=65536, kv="f16", lang="en", calibrated=None):
+    return gguf_plan.emit_lmstudio(rec, ctx, kv, vram=24.0, overhead=1.0,
+                                   model_path="/m/x.gguf", lang=lang,
+                                   calibrated=calibrated)
+
+
+def test_ollama_modelfile_has_from_and_num_ctx():
+    out = emit_ollama()
+    assert "FROM /m/x.gguf" in out
+    assert "PARAMETER num_ctx 65536" in out
+
+
+def test_ollama_modelfile_carries_the_same_sampling_as_llama_server():
+    """thinking / non-thinking の出し分けは3形式とも同じ既定値のはず."""
+    think = emit_ollama(Q5_K_M)
+    assert "PARAMETER temperature 1.0" in think
+    assert "PARAMETER top_p 0.95" in think
+    assert "PARAMETER min_p 0.0" in think
+
+    non_think = emit_ollama(NO_THINK)
+    assert "PARAMETER temperature 0.7" in non_think
+    assert "PARAMETER top_p 0.8" in non_think
+
+
+def test_ollama_modelfile_never_claims_a_gpu_layer_parameter():
+    """num_gpu は公式の PARAMETER 一覧に無い。**PARAMETER行として**書いたら嘘になる.
+
+    注記のコメント文では「無い」と説明するために num_gpu/-ngl の名前そのものが
+    出てくるので、単純な in 判定では区別できない。実際に指令として
+    出ていないことを見る。
+    """
+    out = emit_ollama()
+    for line in out.splitlines():
+        s = line.strip()
+        assert not s.startswith("PARAMETER num_gpu")
+        assert not s.startswith("PARAMETER num_thread")
+        assert not s.startswith("-ngl")
+        assert not s.startswith("--device")
+
+
+def test_ollama_modelfile_never_claims_a_spec_type_flag():
+    """--spec-type は llama-server 専用。**指令としては** Modelfile に出さない."""
+    out = emit_ollama(Q5_K_M)  # MTPテンソルあり
+    assert not any(ln.strip().startswith("--spec-type")
+                   or ln.strip().startswith("PARAMETER draft")
+                   for ln in out.splitlines())
+    assert "MTP" in out or "mtp" in out.lower()   # 存在自体には触れる（注記として）
+
+
+def test_ollama_kv_quantization_is_flagged_as_a_global_env_var():
+    """q8_0 を選んだときは「Modelfile単位では効かない」と書く."""
+    q8 = emit_ollama(kv="q8_0")
+    assert "OLLAMA_KV_CACHE_TYPE" in q8
+    f16 = emit_ollama(kv="f16")
+    assert "OLLAMA_KV_CACHE_TYPE" not in f16
+
+
+def test_ollama_output_still_carries_the_shared_estimate_header():
+    """見積り(モデル+KV+オーバーヘッド)は3形式とも同じ書き方であるべき."""
+    out = emit_ollama()
+    assert "estimate:" in out
+    assert "hybrid attention" in out
+
+
+def test_ollama_japanese_output_differs():
+    en = emit_ollama(lang="en")
+    ja = emit_ollama(lang="ja")
+    assert en != ja
+    assert "estimate:" in en and "見積り:" in ja
+    for out in (en, ja):
+        assert "FROM /m/x.gguf" in out
+        assert "PARAMETER num_ctx 65536" in out
+
+
+def test_lmstudio_emits_valid_json_with_the_documented_keys():
+    """公開されている load API のキー名だけを使うこと."""
+    out = emit_lmstudio()
+    start = out.index("{")
+    end = out.rindex("}") + 1
+    body = json.loads(out[start:end])
+    assert body == {
+        "model": "/m/x.gguf",
+        "context_length": 65536,
+        "eval_batch_size": 512,
+        "flash_attention": True,
+        "offload_kv_cache_to_gpu": True,
+    }
+
+
+def test_lmstudio_never_claims_a_gpu_layer_count_or_kv_type_key():
+    """context_length 等以外の未確認キー (gpu_layers, kv_cache_type 等) を書かない."""
+    out = emit_lmstudio(kv="q8_0")
+    for bad_key in ("gpu_layers", "n_gpu_layers", "kv_cache_type", "ctk", "ctv"):
+        assert bad_key not in out
+
+
+def test_lmstudio_warns_when_the_plan_needs_q8_kv():
+    """q8_0 前提の計画は LM Studio では達成できないかもしれないと明記する."""
+    q8 = emit_lmstudio(kv="q8_0")
+    assert ("q8_0" in q8 and "no such setting" in q8.lower()) or "見当たらない" in q8
+    f16 = emit_lmstudio(kv="f16")
+    assert "cannot actually be reached" not in f16 and "達成できない" not in f16
+
+
+def test_lmstudio_output_still_carries_the_shared_estimate_header():
+    out = emit_lmstudio()
+    assert "estimate:" in out
+    assert "hybrid attention" in out
+
+
+def test_lmstudio_japanese_output_differs():
+    en = emit_lmstudio(lang="en")
+    ja = emit_lmstudio(lang="ja")
+    assert en != ja
+    assert "estimate:" in en and "見積り:" in ja
+
+
+def _run_main(monkeypatch, capsys, tmp_path, target):
+    """main() を実際に通す。--target の配線そのものにバグがあれば、ここで見つかる.
+
+    ``emit_ollama`` / ``emit_lmstudio`` を直接呼ぶテストだけでは、main() 側の
+    if/elif で分岐を間違えていても気づけない (例: 全部 emit_config に落ちる)。
+    """
+    import sys as _sys  # noqa: PLC0415 - このテストでしか使わない
+
+    json_path = tmp_path / "gguf.json"
+    json_path.write_text(json.dumps(Q5_K_M), encoding="utf-8")
+    argv = ["gguf-plan", str(json_path), "--vram", "24", "--overhead", "1",
+            "--pick", "Q5_K_M", "--ctx", "65536",
+            "--config", str(tmp_path / "no-such-config.toml")]
+    if target:
+        argv += ["--target", target]
+    monkeypatch.setattr(_sys, "argv", argv)
+    gguf_plan.main()
+    return capsys.readouterr().out
+
+
+def test_target_llama_server_is_the_default(monkeypatch, capsys, tmp_path):
+    out = _run_main(monkeypatch, capsys, tmp_path, target=None)
+    assert "llama-server -m" in out
+    assert "FROM " not in out
+
+
+def test_target_ollama_routes_to_the_modelfile(monkeypatch, capsys, tmp_path):
+    out = _run_main(monkeypatch, capsys, tmp_path, target="ollama")
+    assert "FROM " in out
+    assert "PARAMETER num_ctx 65536" in out
+    assert "llama-server -m" not in out
+
+
+def test_target_lmstudio_routes_to_the_json_config(monkeypatch, capsys, tmp_path):
+    out = _run_main(monkeypatch, capsys, tmp_path, target="lmstudio")
+    assert '"context_length": 65536' in out
+    assert "llama-server -m" not in out
+    assert "FROM " not in out

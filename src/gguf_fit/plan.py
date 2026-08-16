@@ -12,6 +12,13 @@
   * `--spec-type`     … MTP テンソルがあるときだけ draft-mtp を付ける
   * サンプリング一式  … chat_template が thinking なら Qwen3.8 公式推奨
 
+`--target {llama-server,ollama,lmstudio}` (既定 llama-server) で出力形式を選べる。
+見積り部分 (モデル+KV+オーバーヘッド、余りの警告、実測/計算の由来) は3形式共通。
+ただし Ollama の Modelfile も LM Studio の公開インターフェースも llama-server の
+CLI 全部を書けるわけではない (GPU 層数・KV量子化の型・MTP)。**書けないものは
+推測で埋めず、書けない理由をコメントに残す。**詳細は emit_ollama / emit_lmstudio
+の docstring。
+
 --- 単位について (ここを間違えると全部ずれる) ---
 
 GGUF の `size_gb` は **バイト ÷ 10^9 (GB)**。一方 GPU の「24GB」は
@@ -245,17 +252,15 @@ def cmd_table(recs, vram, overhead, ctx_req, lang=DEFAULT_LANG, calibrated=None)
         print(line)
 
 
-def emit_config(rec: dict, ctx: int, kv_mode: str, vram: float, overhead: float,
-                model_path: str, port: int, device: str | None,
-                lang: str = DEFAULT_LANG, threads: int | None = None,
-                device_ambiguous: bool = False, n_gpus: int = 0,
-                calibrated: KvRates | None = None) -> str:
-    think = rec.get("chat_template_has_think")
-    samp = THINKING_SAMPLING if think else NON_THINKING_SAMPLING
-    mtp = bool(rec.get("mtp_tensor_count"))
-    used = file_gib(rec) + kv_gib(rec, ctx, kv_mode, calibrated) + overhead
-    max_tokens, mt_key, mt_kw = max_tokens_for(ctx)
+def _header_lines(rec: dict, ctx: int, kv_mode: str, vram: float, overhead: float,
+                  lang: str, calibrated: KvRates | None) -> list[str]:
+    """出力3形式 (llama-server / Ollama / LM Studio) で共通の見積り部分.
 
+    見積り・余りの判定・KVの由来 (測った値か計算値か) はサーバの種類に関係ない
+    事実なので、ここで1回だけ書く。書き方をサーバごとに変えると、同じ
+    モデル・同じ ctx なのに数字が食い違って見える事故になる。
+    """
+    used = file_gib(rec) + kv_gib(rec, ctx, kv_mode, calibrated) + overhead
     L = []
     L.append("# " + t("hdr_title", lang, name=short(rec), ctx=ctx, kv=kv_mode))
     L.append("# " + t("hdr_estimate", lang, model=file_gib(rec),
@@ -285,6 +290,20 @@ def emit_config(rec: dict, ctx: int, kv_mode: str, vram: float, overhead: float,
         measured = calibrated is not None and calibrated.get(kv_mode)
         L.append("# " + t("hdr_kv_measured" if measured else "hdr_kv_derived",
                           lang, kv=kv_mode, kb=per_tok / 1024))
+    return L
+
+
+def emit_config(rec: dict, ctx: int, kv_mode: str, vram: float, overhead: float,
+                model_path: str, port: int, device: str | None,
+                lang: str = DEFAULT_LANG, threads: int | None = None,
+                device_ambiguous: bool = False, n_gpus: int = 0,
+                calibrated: KvRates | None = None) -> str:
+    think = rec.get("chat_template_has_think")
+    samp = THINKING_SAMPLING if think else NON_THINKING_SAMPLING
+    mtp = bool(rec.get("mtp_tensor_count"))
+    max_tokens, mt_key, mt_kw = max_tokens_for(ctx)
+
+    L = _header_lines(rec, ctx, kv_mode, vram, overhead, lang, calibrated)
     L.append("")
     L.append("# " + t("sec_server", lang))
     # 注記は**コマンドの外**に出す。継続行 (\) の途中に # を書くと
@@ -328,6 +347,88 @@ def emit_config(rec: dict, ctx: int, kv_mode: str, vram: float, overhead: float,
     return "\n".join(L)
 
 
+def emit_ollama(rec: dict, ctx: int, kv_mode: str, vram: float, overhead: float,
+                model_path: str, lang: str = DEFAULT_LANG,
+                calibrated: KvRates | None = None) -> str:
+    """Modelfile を出す.
+
+    **Ollama の Modelfile には、llama-server の全部が書けるわけではない。**
+    公式ドキュメント (docs.ollama.com/modelfile) の PARAMETER 一覧に
+    num_gpu / num_thread は無い。GPU に何層乗せるかは Ollama 自身が決める。
+
+    KV キャッシュの型 (f16/q8_0) も Modelfile には書けない。決めるのは
+    ``OLLAMA_KV_CACHE_TYPE`` という**サーバ全体の環境変数**で、モデルごとには
+    切り替えられない。この関数が q8_0 を選んだときは、そのことを書くだけで、
+    無いパラメータを捏造はしない。
+
+    MTP (--spec-type draft-mtp) に対応する Modelfile のキーは無い。
+    ``draft_num_predict`` という投機的デコード用のパラメータはあるが、
+    llama.cpp の MTP ドラフトと同じ仕組みで動くかどうかは確認していないので、
+    ここでは出さない。
+    """
+    think = rec.get("chat_template_has_think")
+    samp = THINKING_SAMPLING if think else NON_THINKING_SAMPLING
+    mtp = bool(rec.get("mtp_tensor_count"))
+
+    L = _header_lines(rec, ctx, kv_mode, vram, overhead, lang, calibrated)
+    L.append("")
+    L.append("# " + t("sec_ollama", lang))
+    L.append("# " + t("note_ollama_no_gpu_layers", lang))
+    if kv_mode == "q8_0":
+        L.append("# " + t("note_ollama_kv_is_global", lang))
+    if mtp:
+        L.append("# " + t("note_ollama_mtp_unverified", lang, n=rec["mtp_tensor_count"]))
+    L.append("")
+    L.append(f"FROM {model_path}")
+    L.append(f"PARAMETER num_ctx {ctx}")
+    for k, v in samp.items():
+        L.append(f"PARAMETER {k} {v}")
+    L.append("")
+    name = short(rec).lower().replace(".", "-").replace("_", "-")
+    L.append("# " + t("ollama_create_hint", lang, name=name))
+    L.append(f"#   ollama create {name} -f ./Modelfile")
+    if kv_mode == "q8_0":
+        L.append("#   OLLAMA_KV_CACHE_TYPE=q8_0 ollama serve")
+    return "\n".join(L)
+
+
+def emit_lmstudio(rec: dict, ctx: int, kv_mode: str, vram: float, overhead: float,
+                  model_path: str, lang: str = DEFAULT_LANG,
+                  calibrated: KvRates | None = None) -> str:
+    """LM Studio 向けの読み込み設定 (JSON) を出す.
+
+    ``POST /api/v1/models/load`` (lmstudio.ai/docs/developer/rest/load) と
+    ``lms load`` CLI が公開しているキーだけを書く: context_length /
+    eval_batch_size / flash_attention / offload_kv_cache_to_gpu。
+
+    **GPU に何層乗せるか、KV キャッシュを q8_0 にできるかは、この2つの
+    公開インターフェースのどちらにも見当たらない。**GUI 側には項目がある
+    かもしれないが確認していないので、無いものとして扱う。kv_mode が
+    q8_0 のときは、その前提が LM Studio では満たせないかもしれないと書く。
+    """
+    import json as _json  # noqa: PLC0415 - この関数でしか使わない
+
+    L = _header_lines(rec, ctx, kv_mode, vram, overhead, lang, calibrated)
+    L.append("")
+    L.append("# " + t("sec_lmstudio", lang))
+    L.append("# " + t("note_lmstudio_no_gpu_layers", lang))
+    if kv_mode == "q8_0":
+        L.append("# " + t("note_lmstudio_kv_unsupported", lang))
+    body = {
+        "model": model_path,
+        "context_length": ctx,
+        "eval_batch_size": 512,
+        "flash_attention": True,
+        "offload_kv_cache_to_gpu": True,
+    }
+    L.append(_json.dumps(body, indent=2, ensure_ascii=False))
+    L.append("")
+    name = short(rec)
+    L.append("# " + t("lmstudio_cli_hint", lang))
+    L.append(f"#   lms load \"{name}\" --gpu max --context-length {ctx}")
+    return "\n".join(L)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=t("desc_plan", DEFAULT_LANG))
     ap.add_argument("json_path", nargs="?",
@@ -341,6 +442,8 @@ def main() -> int:
     ap.add_argument("--pick", default=None, help=t("help_pick", DEFAULT_LANG))
     ap.add_argument("--kv", choices=["f16", "q8_0", "auto"], default="auto",
                     help=t("help_kv", DEFAULT_LANG))
+    ap.add_argument("--target", choices=["llama-server", "ollama", "lmstudio"],
+                    default="llama-server", help=t("help_target", DEFAULT_LANG))
     ap.add_argument("--model-path", default=None, dest="model_path",
                     help=t("help_model_path", DEFAULT_LANG))
     ap.add_argument("--port", type=int, default=None)
@@ -517,11 +620,19 @@ def main() -> int:
     if not rec.get("path") and not r_model_path.value:
         print("# " + t("no_path_in_json", lang), file=sys.stderr)
     device = str(r_device.value) if r_device.value else None
-    print(emit_config(rec, ctx, kv_mode, vram, overhead,
-                      mp, int(r_port.value), device, lang,
-                      threads=r_threads.value,
-                      device_ambiguous=hw.device_index_is_ambiguous(),
-                      n_gpus=len(hw.gpus), calibrated=kv))
+
+    if args.target == "ollama":
+        print(emit_ollama(rec, ctx, kv_mode, vram, overhead, mp, lang,
+                          calibrated=kv))
+    elif args.target == "lmstudio":
+        print(emit_lmstudio(rec, ctx, kv_mode, vram, overhead, mp, lang,
+                            calibrated=kv))
+    else:
+        print(emit_config(rec, ctx, kv_mode, vram, overhead,
+                          mp, int(r_port.value), device, lang,
+                          threads=r_threads.value,
+                          device_ambiguous=hw.device_index_is_ambiguous(),
+                          n_gpus=len(hw.gpus), calibrated=kv))
     return 0
 
 

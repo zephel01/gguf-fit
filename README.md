@@ -254,6 +254,30 @@ gguf-plan gguf.json --vram 24 --pick Q5_K_M --ctx 131072
 Omit `--ctx` and it rounds **down** to a standard context size rather than filling the budget
 to the brim: 69,632 would leave 0.02 GiB of headroom and gain 6% of context over 65,536.
 
+`--target {llama-server,ollama,lmstudio}` (default `llama-server`) switches the output format:
+
+```bash
+gguf-plan gguf.json --vram 24 --pick Q5_K_M --ctx 131072 --target ollama
+gguf-plan gguf.json --vram 24 --pick Q5_K_M --ctx 131072 --target lmstudio
+```
+
+The estimate, headroom warning, and "measured vs. derived KV" line are identical across all
+three targets — only the launch format changes. Neither Ollama's `Modelfile` nor LM Studio's
+documented load interface exposes everything `llama-server`'s CLI does, and this tool does not
+fill the gap by guessing:
+
+* **GPU layer count** — Ollama decides offload itself (no `num_gpu`/`num_thread` in the
+  `Modelfile` parameter list); LM Studio's load API and `lms` CLI only take a 0–1 fraction
+  (`lms load --gpu 0.5`), not a layer count. Neither output sets one.
+* **KV cache quantization (`q8_0`)** — Ollama controls this with the server-wide
+  `OLLAMA_KV_CACHE_TYPE` environment variable, not per model; the emitted `Modelfile` says so
+  instead of inventing a `PARAMETER` for it. LM Studio's documented load API/CLI has no
+  equivalent at all — if a plan needs `q8_0` to fit the budget, the LM Studio output says
+  plainly that the budget may not be reachable there.
+* **MTP / `--spec-type draft-mtp`** — Ollama has a `draft_num_predict` parameter for
+  speculative decoding, but whether it drives MTP tensors the way llama.cpp's `--spec-type
+  draft-mtp` does hasn't been checked, so nothing is set for it.
+
 </details>
 
 <details open>

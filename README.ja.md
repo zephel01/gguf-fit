@@ -265,6 +265,30 @@ gguf-plan gguf.json --vram 24 --pick Q5_K_M --ctx 131072
 `--ctx` を省くと**きりのいい値に切り下げます**。予算いっぱいは勧めません。69,632 は余りが
 0.02 GiB しか残らず、65,536 に対して context 6% 増しか得ていないためです。
 
+`--target {llama-server,ollama,lmstudio}`（既定 `llama-server`）で出力形式を切り替えます。
+
+```bash
+gguf-plan gguf.json --vram 24 --pick Q5_K_M --ctx 131072 --target ollama
+gguf-plan gguf.json --vram 24 --pick Q5_K_M --ctx 131072 --target lmstudio
+```
+
+見積り・余りの警告・「実測値か計算値か」の行は3形式とも同じです。変わるのは起動設定の
+書式だけ。ただし Ollama の `Modelfile` も LM Studio の公開インターフェースも、
+`llama-server` の CLI 全部を書けるわけではありません。ここは**推測で埋めません**。
+
+* **GPU に何層乗せるか** — Ollama は自分で決めます（`Modelfile` の PARAMETER 一覧に
+  `num_gpu`/`num_thread` は無い）。LM Studio のロード API と `lms` CLI は 0〜1 の割合
+  （`lms load --gpu 0.5`）しか受け付けず、層数そのものは指定できません。どちらの出力にも
+  書きません。
+* **KV キャッシュの量子化（`q8_0`）** — Ollama で決めるのはサーバ全体の環境変数
+  `OLLAMA_KV_CACHE_TYPE` で、モデル単位ではありません。出力する `Modelfile` は存在しない
+  PARAMETER をでっち上げる代わりに、そう明記します。LM Studio の公開ロード API・CLI には
+  相当する項目自体が見当たりません。計画が予算に収めるため `q8_0` を前提にしている場合、
+  LM Studio の出力には「この予算は達成できないかもしれない」とはっきり書きます。
+* **MTP / `--spec-type draft-mtp`** — Ollama には投機的デコード用の `draft_num_predict`
+  というパラメータがありますが、それが llama.cpp の `--spec-type draft-mtp` と同じ仕組みで
+  MTP テンソルを使うかどうかは確認していないので、何も設定しません。
+
 </details>
 
 <details open>

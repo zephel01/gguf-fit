@@ -290,6 +290,75 @@ MESSAGES: dict[str, dict[str, str]] = {
         "en": "--- config.yaml (under models:) ---",
         "ja": "--- config.yaml (models: の下) ---",
     },
+    # ---- plan: emit_ollama() ----
+    "help_target": {
+        "en": "output format: a llama-server command (default), an Ollama "
+              "Modelfile, or an LM Studio load config",
+        "ja": "出力形式。既定は llama-server の起動コマンド。ほかに Ollama の "
+              "Modelfile、LM Studio の読み込み設定も選べる",
+    },
+    "sec_ollama": {
+        "en": "--- Ollama Modelfile ---",
+        "ja": "--- Ollama Modelfile ---",
+    },
+    "note_ollama_no_gpu_layers": {
+        "en": "Ollama decides GPU offload itself; the Modelfile has no "
+              "num_gpu/num_thread parameter to set it with (checked against "
+              "docs.ollama.com/modelfile), so none is written here",
+        "ja": "GPU に何層乗せるかは Ollama 自身が決める。Modelfile には "
+              "num_gpu/num_thread に相当する項目が無いので (docs.ollama.com/"
+              "modelfile で確認)、ここには書かない",
+    },
+    "note_ollama_kv_is_global": {
+        "en": "this plan assumes q8_0 KV, but Ollama has no per-model KV cache "
+              "type in the Modelfile -- it is the server-wide OLLAMA_KV_CACHE_TYPE "
+              "env var, which affects every loaded model, not just this one",
+        "ja": "この計画は KV を q8_0 前提にしているが、Ollama には Modelfile 単位の "
+              "KV 型指定が無い。決めるのはサーバ全体の環境変数 "
+              "OLLAMA_KV_CACHE_TYPE で、いま動いている全モデルに効く",
+    },
+    "note_ollama_mtp_unverified": {
+        "en": "found {n} MTP tensors, but whether Ollama's draft_num_predict "
+              "uses them the way llama.cpp's --spec-type draft-mtp does has not "
+              "been checked, so nothing is set for it here",
+        "ja": "MTP テンソルを {n} 本確認したが、Ollama の draft_num_predict が "
+              "llama.cpp の --spec-type draft-mtp と同じ仕組みで使うかは "
+              "確認していないので、ここでは何も設定しない",
+    },
+    "ollama_create_hint": {
+        "en": "save as ./Modelfile, then:",
+        "ja": "./Modelfile として保存してから:",
+    },
+    # ---- plan: emit_lmstudio() ----
+    "sec_lmstudio": {
+        "en": "--- LM Studio load config ---",
+        "ja": "--- LM Studio 読み込み設定 ---",
+    },
+    "note_lmstudio_no_gpu_layers": {
+        "en": "checked against the documented load API (lmstudio.ai/docs/"
+              "developer/rest/load) and the lms CLI: neither exposes a GPU "
+              "layer count, only lms load --gpu as a 0-1 fraction, so it is "
+              "left out of the JSON below",
+        "ja": "公開されているロード API (lmstudio.ai/docs/developer/rest/load) と "
+              "lms CLI を確認したが、どちらも GPU に何層乗せるかは指定できず、 "
+              "lms load --gpu は 0〜1 の割合を渡すだけなので、下の JSON には "
+              "書いていない",
+    },
+    "note_lmstudio_kv_unsupported": {
+        "en": "this plan assumes q8_0 KV to fit the budget, but neither the "
+              "load API nor the lms CLI documents a KV cache quantization "
+              "option -- if LM Studio has no such setting in the GUI either, "
+              "this budget cannot actually be reached there",
+        "ja": "この計画は予算に収めるため KV を q8_0 前提にしているが、ロード API "
+              "にも lms CLI にも KV キャッシュの量子化を指定する項目は見当たらない。 "
+              "GUI にも同等の設定が無ければ、この予算は LM Studio では達成できない",
+    },
+    "lmstudio_cli_hint": {
+        "en": "roughly equivalent with the lms CLI (context length only; "
+              "no KV-type or GPU-layer control there either):",
+        "ja": "lms CLI でのおおよその対応 (context length のみ。こちらにも "
+              "KV 型・GPU 層数を指定する項目は無い):",
+    },
     "cfg_max_tokens_frac": {
         "en": "3/4 of ctx {ctx:,}; the rest is for the prompt",
         "ja": "ctx {ctx:,} の 3/4。残りはプロンプト用",
