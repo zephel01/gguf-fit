@@ -203,6 +203,14 @@ MESSAGES: dict[str, dict[str, str]] = {
         "en": "quantized -ctk/-ctv requires -fa on (included below)",
         "ja": "-ctk/-ctv の量子化には -fa on が必須 (下に含めてある)",
     },
+    "warn_vram_mismatch": {
+        "en": "!! vram {given:.1f} GiB came from {source}, but this machine reports "
+              "{detected:.1f} GiB. Planning for another machine? If not, drop the "
+              "setting (or run --write-config) so it matches this one.",
+        "ja": "⚠️ vram {given:.1f} GiB は {source} から来ていますが、このマシンの"
+              "実測は {detected:.1f} GiB です。別のマシン向けの計画ならそれで"
+              "構いません。違うなら設定を消すか --write-config で取り直してください",
+    },
     "note_no_device": {
         "en": "no NVIDIA GPU detected, so --device is omitted "
               "(llama.cpp picks Metal / CPU on its own)",

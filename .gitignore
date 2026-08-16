@@ -13,6 +13,12 @@ venv/
 .ruff_cache/
 .pytest_cache/
 
+# マシン固有の設定。**コミットしてはいけない**。
+# --write-config は VRAM やコア数を書き込むので、これを別のマシンに持って
+# いくと「そのマシンには無い GPU」を前提に計画が立つ (実際にやらかした)。
+# 雛形は gguf-fit.example.toml のほうを追跡する。
+gguf-fit.toml
+
 # このツールの出力 (実行した場所に溜まる)
 gguf.json
 gguf_report.txt

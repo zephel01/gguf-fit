@@ -338,6 +338,13 @@ def main() -> int:
                  "(or set vram in the config file)")
     vram, overhead = float(r_vram.value), float(r_overhead.value)
 
+    # 設定ファイルを別のマシンに持っていったときに気づけるようにする。
+    # 実測が取れているのに指定値と 食い違うなら、そう言う。
+    if r_vram.source != "detected" and _hardware.vram_disagrees(vram, hw):
+        print("# " + t("warn_vram_mismatch", lang, given=vram,
+                       source=r_vram.source, detected=hw.suggested_vram_gib()),
+              file=sys.stderr)
+
     recs = json.loads(Path(args.json_path).read_text(encoding="utf-8"))
     if isinstance(recs, dict):
         recs = [recs]

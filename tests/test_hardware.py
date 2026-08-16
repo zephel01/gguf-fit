@@ -209,3 +209,47 @@ def test_multiple_gpus_are_flagged_as_ambiguous():
                     ram_gib=31.0, physical_cores=16, logical_cores=32,
                     unified_memory=False)
     assert h.device_index_is_ambiguous() is True
+
+
+# --- 指定値と実測の照合 ----------------------------------------------------
+
+LINUX_2GPU = hw.Hardware(gpus=[hw.Gpu(0, "RTX 3090", 24.0, 0.3),
+                               hw.Gpu(1, "RTX 5090", 31.8, 0.0)],
+                         ram_gib=31.0, physical_cores=16, logical_cores=32,
+                         unified_memory=False)
+
+
+def test_config_from_another_machine_is_caught():
+    """Mac で書いた vram = 48.0 を NVIDIA 機で読んだ実際の事故.
+
+    そのままだと「載らない ctx」を勧めてしまう。
+    """
+    assert hw.vram_disagrees(48.0, LINUX_2GPU) is True
+
+
+def test_matching_value_is_not_flagged():
+    assert hw.vram_disagrees(31.8, LINUX_2GPU) is False
+
+
+def test_small_difference_is_tolerated():
+    """ドライバの取り分などで数百 MiB はずれる。そこで騒いでも意味がない."""
+    assert hw.vram_disagrees(31.0, LINUX_2GPU) is False
+
+
+def test_planning_for_a_smaller_card_is_flagged_too():
+    """24GiB 機向けに計画するのは正当だが、意図的かどうかは本人しか知らない.
+
+    だから「止める」のではなく「言う」。
+    """
+    assert hw.vram_disagrees(24.0, LINUX_2GPU) is True
+
+
+def test_nothing_is_said_when_detection_failed():
+    """判断材料が無いのに警告するとノイズになる."""
+    blind = hw.Hardware(gpus=[], ram_gib=None, physical_cores=None,
+                        logical_cores=None, unified_memory=False)
+    assert hw.vram_disagrees(48.0, blind) is False
+
+
+def test_nothing_is_said_when_no_value_was_given():
+    assert hw.vram_disagrees(None, LINUX_2GPU) is False

@@ -233,3 +233,22 @@ def render(hw: Hardware) -> str:
         cores += "not detected"
     lines.append(cores)
     return "\n".join(lines)
+
+
+#: 指定値と実測がこの割合を超えて食い違ったら警告する
+VRAM_MISMATCH_TOLERANCE = 0.10
+
+
+def vram_disagrees(given: float | None, hw: Hardware) -> bool:
+    """指定された VRAM が、このマシンの実測と食い違っているか.
+
+    設定ファイルを別のマシンに持っていったときに気づけるようにするための照合。
+    実際に、Mac で書いた ``vram = 48.0`` (統合メモリ 64GiB の 75%) を
+    NVIDIA 2枚の Linux 機で読み、**載らない ctx を勧める**事故を踏んだ。
+
+    実測が取れないときは何も言わない (判断材料が無いのに騒がない)。
+    """
+    detected = hw.suggested_vram_gib()
+    if given is None or detected is None:
+        return False
+    return abs(given - detected) > detected * VRAM_MISMATCH_TOLERANCE

@@ -171,6 +171,10 @@ def render_toml(resolved: dict[str, Resolved], hw_summary: str = "") -> str:
     lines = [
         "# gguf-fit の設定ファイル",
         "#",
+        "# !! このファイルはこのマシン固有です。**コミットしないでください。**",
+        "#    VRAM やコア数が書いてあるので、別のマシンに持っていくと",
+        "#    「そこには無い GPU」を前提に計画が立ちます。",
+        "#",
         "# gguf-plan --write-config で生成しました。",
         "# 各行の <- は、その値がどこから来たかです。",
         "#   detected = このマシンを見て決めた値",
