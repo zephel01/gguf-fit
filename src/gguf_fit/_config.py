@@ -53,6 +53,9 @@ KNOWN_KEYS: dict[str, type] = {
     "threads": int,
     "llama_server": str,
     "llama_servers": list,
+    # gguf-calibrate が書く実測値 (B/token)。理論値より優先する
+    "kv_f16_bytes": float,
+    "kv_q8_bytes": float,
     "model_path": str,
 }
 

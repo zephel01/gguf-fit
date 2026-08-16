@@ -50,6 +50,7 @@ Issues = "https://github.com/zephel01/gguf-fit/issues"
 [project.scripts]
 gguf-probe = "gguf_fit.probe:main"
 gguf-plan = "gguf_fit.plan:main"
+gguf-calibrate = "gguf_fit.calibrate:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/gguf_fit"]
