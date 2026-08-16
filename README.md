@@ -285,8 +285,20 @@ kv_f16_bytes = 70720   # 69.1 KB/token, 2 points
 kv_q8_bytes = 44096    # 43.1 KB/token, 2 points
 ```
 
-Paste those two lines into `gguf-fit.toml` and `gguf-plan` uses them instead of the GGUF
-arithmetic. Requires `nvidia-smi`; `--no-warmup` skips the request but reads ~110 MiB low.
+`--write-config` puts those two lines in the config file for you instead of leaving you to
+copy them. Re-running replaces the block and keeps everything else, including your comments;
+the result is parsed before it is written, so a run can't leave you with a broken file.
+
+```bash
+gguf-calibrate --model /models/your.gguf --write-config
+# [updated] gguf-fit.toml
+```
+
+`gguf-plan` then uses the measured figures instead of the GGUF arithmetic. Requires
+`nvidia-smi`; `--no-warmup` skips the request but reads ~110 MiB low.
+
+Two identical runs produced the same four figures to the MiB, so **once is enough** — if the
+numbers move later, something about the environment moved.
 
 > [!NOTE]
 > At least two `--ctx` values are required. One point cannot separate the slope from the

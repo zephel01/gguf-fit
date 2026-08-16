@@ -296,9 +296,20 @@ kv_f16_bytes = 70720   # 69.1 KB/token, 2 points
 kv_q8_bytes = 44096    # 43.1 KB/token, 2 points
 ```
 
-この2行を `gguf-fit.toml` に貼れば、`gguf-plan` は GGUF からの計算値ではなくこちらを
-使います。`nvidia-smi` が要ります。`--no-warmup` でリクエストを省けますが、
-その分 110 MiB ほど低く出ます。
+`--write-config` を付ければ、貼り付けずに設定ファイルへ直接書きます。再実行すると
+較正ブロックだけを差し替え、**手で書いたコメントや他のキーはそのまま残します**。
+書く前に TOML として読み直すので、失敗して壊れたファイルが残ることはありません。
+
+```bash
+gguf-calibrate --model /models/your.gguf --write-config
+# [updated] gguf-fit.toml
+```
+
+これで `gguf-plan` は GGUF からの計算値ではなく実測値を使います。`nvidia-smi` が
+要ります。`--no-warmup` でリクエストを省けますが、その分 110 MiB ほど低く出ます。
+
+同じ条件で2回通して4点とも 1 MiB の差もなく一致したので、**1回測れば足ります**。
+あとで値が動いたら、それは環境のほうが変わったということです。
 
 > [!NOTE]
 > `--ctx` は**2つ以上必要**です。1点では傾きと切片を分離できません

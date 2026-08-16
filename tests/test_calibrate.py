@@ -404,3 +404,88 @@ def test_the_warmup_fills_one_batch_by_default():
     from gguf_fit.calibrate import build_launch_cmd  # noqa: PLC0415
     cmd = build_launch_cmd("s", "/m.gguf", 32768, "f16", None, None, 1)
     assert cmd[cmd.index("--batch-size") + 1] == str(cal.WARMUP_PROMPT_TOKENS)
+
+
+# --- 設定ファイルへの書き戻し ---------------------------------------------
+
+FITS = [cal.fit_points(F16_WARM), cal.fit_points(Q8_WARM)]
+
+
+def test_writing_creates_the_file_when_there_is_none(tmp_path):
+    import tomllib  # noqa: PLC0415
+
+    target = tmp_path / "gguf-fit.toml"
+    assert cal.write_config(FITS, target) is True
+    parsed = tomllib.loads(target.read_text())
+    assert parsed["kv_f16_bytes"] == pytest.approx(70720, abs=1)
+    assert parsed["kv_q8_bytes"] == pytest.approx(44096, abs=1)
+
+
+def test_running_twice_does_not_break_the_file(tmp_path):
+    """**同じキーを2回書くと TOML は壊れる。**追記だけだと2回目で読めなくなる."""
+    import tomllib  # noqa: PLC0415
+
+    target = tmp_path / "gguf-fit.toml"
+    cal.write_config(FITS, target)
+    assert cal.write_config(FITS, target) is False       # 2回目は新規ではない
+    text = target.read_text()
+    assert text.count("kv_f16_bytes") == 1
+    assert text.count(cal.BLOCK_MARKER) == 1
+    tomllib.loads(text)                                   # 壊れていない
+
+
+def test_hand_written_settings_and_comments_survive(tmp_path):
+    """**人が書いたものを消さない。**較正ブロックだけ差し替える."""
+    import tomllib  # noqa: PLC0415
+
+    target = tmp_path / "gguf-fit.toml"
+    target.write_text('# my notes, do not lose these\nlang = "ja"\nvram = 24.0\n')
+    cal.write_config(FITS, target)
+    text = target.read_text()
+    assert "# my notes, do not lose these" in text
+    parsed = tomllib.loads(text)
+    assert parsed["lang"] == "ja"
+    assert parsed["vram"] == 24.0
+    assert parsed["kv_f16_bytes"] == pytest.approx(70720, abs=1)
+
+
+def test_an_older_hand_pasted_value_is_replaced_not_duplicated(tmp_path):
+    """較正ブロックの外に手で貼ってあっても、古い値を残さない."""
+    import tomllib  # noqa: PLC0415
+
+    target = tmp_path / "gguf-fit.toml"
+    target.write_text('lang = "en"\nkv_f16_bytes = 69632\n')
+    cal.write_config(FITS, target)
+    parsed = tomllib.loads(target.read_text())
+    assert parsed["kv_f16_bytes"] == pytest.approx(70720, abs=1)
+    assert parsed["lang"] == "en"
+
+
+def test_a_file_that_would_not_parse_is_not_written(tmp_path):
+    """**壊れたファイルを置かない。**書く前に読み直して確かめる."""
+    import tomllib  # noqa: PLC0415
+
+    target = tmp_path / "gguf-fit.toml"
+    broken = 'lang = "ja\n'          # 閉じ引用符がない
+    target.write_text(broken)
+    with pytest.raises(tomllib.TOMLDecodeError):
+        cal.write_config(FITS, target)
+    assert target.read_text() == broken       # 元のまま
+
+
+def test_stripping_leaves_unrelated_keys_alone():
+    text = ('lang = "ja"\n'
+            f'{cal.BLOCK_MARKER}\n'
+            '# measured\n'
+            'kv_f16_bytes = 1\n'
+            'kv_q8_bytes = 2\n')
+    out = cal.strip_calibrated_block(text)
+    assert out == 'lang = "ja"'
+
+
+def test_stripping_stops_at_the_next_real_setting():
+    """ブロックの下に別のキーが来たら、そこで止めて残す."""
+    text = (f'{cal.BLOCK_MARKER}\n'
+            'kv_f16_bytes = 1\n'
+            'port = 8085\n')
+    assert cal.strip_calibrated_block(text) == "port = 8085"

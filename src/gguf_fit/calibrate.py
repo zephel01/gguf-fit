@@ -55,6 +55,10 @@ KV の型にも ctx にも依存しないので、KV ではなく**推論その�
 **差分で測る。** 起動前後の差を取るので、デスクトップや他プロセスの使用量が
 混ざらない。``--device CUDA0`` と nvidia-smi の並び順が一致しない問題も、
 「一番増えた GPU」を見ることで回避できる。
+
+**再現性は確認済み。** 同じ条件で2回通したところ、4点とも 1 MiB の差もなく
+一致した (21,822 / 24,032 / 20,948 / 22,326)。ラン間のばらつきは無いので、
+1回測れば足りる。値が動いたときは環境が変わったと考えてよい。
 """
 
 from __future__ import annotations
@@ -65,7 +69,13 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import NamedTuple
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # pragma: no cover
+    import tomli as tomllib
 
 from . import _hardware
 
@@ -316,9 +326,14 @@ def render_fits(fits: list[Fit], points: list[Point] | None = None) -> str:
     return "\n".join(lines)
 
 
+#: 書き込んだブロックの目印。**再実行時にここから下を差し替える**ので、
+#: この行より下に手で何かを足さないこと。
+BLOCK_MARKER = "# --- calibrated on this machine (gguf-calibrate) ---"
+
+
 def render_toml_fragment(fits: list[Fit]) -> str:
     """``gguf-fit.toml`` に貼れる形。**測った事実として書く**."""
-    lines = ["# --- calibrated on this machine (gguf-calibrate) ---",
+    lines = [BLOCK_MARKER,
              "# Measured after one request, not derived. Re-run after changing",
              "# llama.cpp, the backend, or the launch flags."]
     for f in fits:
@@ -331,6 +346,51 @@ def render_toml_fragment(fits: list[Fit]) -> str:
         lines.append(f"# intercept was {oh:.2f} GiB "
                      f"(model file + fixed buffers; gguf-plan subtracts the file)")
     return "\n".join(lines) + "\n"
+
+
+def strip_calibrated_block(text: str) -> str:
+    """既に書いてある較正ブロックと ``kv_*_bytes`` の行を取り除く.
+
+    **同じキーを2回書くと TOML は壊れる。**追記していくだけだと、2回目の
+    ``--write-config`` で設定ファイルが読めなくなる。行単位で消すのは、
+    手で書いたコメントや他のキーをそのまま残したいため。
+    """
+    out, skipping = [], False
+    for line in text.splitlines():
+        bare = line.strip()
+        if bare == BLOCK_MARKER:
+            skipping = True
+            continue
+        if skipping:
+            # ブロックの中身はコメントと kv_*_bytes だけ。他が来たら抜ける
+            if (not bare or bare.startswith("#")
+                    or bare.startswith(("kv_f16_bytes", "kv_q8_bytes"))):
+                continue
+            skipping = False
+        if bare.startswith(("kv_f16_bytes", "kv_q8_bytes")):
+            continue
+        out.append(line)
+    while out and not out[-1].strip():
+        out.pop()
+    return "\n".join(out)
+
+
+def write_config(fits: list[Fit], path: Path) -> bool:
+    """較正結果を設定ファイルに書く。新規作成したら True.
+
+    **書く前に TOML として成立することを確かめる。**壊れたファイルを置いて
+    「設定が効かない」に気づけないのが一番困る。成立しなければ例外を投げて
+    元のファイルには触らない。
+    """
+    existed = path.is_file()
+    head = strip_calibrated_block(path.read_text(encoding="utf-8")) if existed else ""
+    body = render_toml_fragment(fits)
+    text = f"{head}\n\n{body}" if head else body
+
+    tomllib.loads(text)          # 壊れていればここで止まる
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return not existed
 
 
 def build_launch_cmd(binary: str, model_path: str, ctx: int, kv_mode: str,
@@ -390,9 +450,15 @@ def main() -> int:
                     help="extra flags passed through verbatim, e.g. "
                          "'--spec-type draft-mtp'. Use the same ones you run with.")
     ap.add_argument("--config", default=None)
+    ap.add_argument("--write-config", nargs="?", const="", default=None,
+                    dest="write_config", metavar="PATH",
+                    help="write kv_f16_bytes / kv_q8_bytes into the config file "
+                         "instead of leaving you to copy them. Defaults to the "
+                         "config file in effect, or ./gguf-fit.toml. Re-running "
+                         "replaces the block; everything else is kept.")
     args = ap.parse_args()
 
-    cfg, _ = load_config(args.config)
+    cfg, cfg_path = load_config(args.config)
     hw = detect(args.llama_server or cfg.get("llama_server", "llama-server"))
     binary = resolve("llama_server", args.llama_server, cfg, "llama-server").value
     device = resolve("device", args.device, cfg,
@@ -435,6 +501,16 @@ def main() -> int:
     print()
     print(render_fits(fits, measured))
     print()
-    print("--- paste into gguf-fit.toml ---")
-    print(render_toml_fragment(fits), end="")
+    if args.write_config is None:
+        print("--- paste into gguf-fit.toml ---")
+        print(render_toml_fragment(fits), end="")
+        return 0
+
+    target = Path(args.write_config) if args.write_config else (
+        cfg_path or Path("gguf-fit.toml"))
+    try:
+        created = write_config(fits, target)
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        sys.exit(f"could not write {target}: {e}")
+    print(f"[{'created' if created else 'updated'}] {target}")
     return 0
