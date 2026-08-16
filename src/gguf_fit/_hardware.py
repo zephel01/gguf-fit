@@ -153,8 +153,13 @@ class Hardware(NamedTuple):
             return False
         return len(self.gpus) > 1
 
-    def free_figures_disagree(self) -> tuple[Gpu, float] | None:
+    def free_figures_disagree(self, device_id: str | None = None
+                              ) -> tuple[Gpu, float] | None:
         """ランタイムの「空き」がドライバの実測と食い違っていたら返す.
+
+        ``device_id`` を渡すと**そのデバイスについてだけ**見る。実機で
+        CUDA0 に計画しているのに ROCm0 の食い違いを毎回出していた。使わない
+        GPU の警告は、読み飛ばす癖をつけるだけで害になる。
 
         実機 (Strix Halo / Radeon 8060S) で見た値::
 
@@ -171,22 +176,31 @@ class Hardware(NamedTuple):
 
         なので「少ないほうを採る」ことはしない。**食い違っている事実だけを
         言って、判断は人に返す。**戻り値は (デバイス, ドライバ側の空き)。
+
+        **裏取りの相手を間違えないこと。**``driver_free_gib`` は amdgpu の
+        sysfs から取った値なので、AMD のデバイスについてしか意味がない。
+        CUDA0 の空き 30.9 GiB を amdgpu の 95.5 GiB と比べれば当然「食い違う」
+        が、それは別々の GPU を並べているだけ。デバイスを指定できるように
+        したときに、実機の構成 (5090 + 3090 + Radeon 8060S) で表に出た。
         """
-        big = self.largest_gpu
+        big = self.gpu_by_device_id(device_id) or self.largest_gpu
         if big is None or big.free_gib is None or self.driver_free_gib is None:
             return None
+        if not is_amd(big):
+            return None          # sysfs の値と突き合わせられる相手ではない
         # ランタイムの空きが、ドライバの実測より目立って小さいとき
         if big.free_gib < self.driver_free_gib * 0.8:
             return (big, self.driver_free_gib)
         return None
 
-    def tight_on_free_memory(self) -> Gpu | None:
+    def tight_on_free_memory(self, device_id: str | None = None) -> Gpu | None:
         """本当に空きが少ないデバイス。**裏取りが取れているときだけ言う**.
 
         ドライバ側でも空きが少ないと確認できた場合に限る。ランタイムの数字
         だけで判断すると、上の APU のケースで誤った助言をする。
+        ``device_id`` を渡すと、そのデバイスについてだけ見る。
         """
-        big = self.largest_gpu
+        big = self.gpu_by_device_id(device_id) or self.largest_gpu
         if big is None or big.free_gib is None:
             return None
         if self.driver_free_gib is not None:
@@ -196,6 +210,19 @@ class Hardware(NamedTuple):
             return None
         # 裏が取れない場合は、ランタイムの言い分を採る (保守的)
         return big if big.free_gib < big.total_gib * 0.5 else None
+
+
+def is_amd(gpu: Gpu) -> bool:
+    """AMD の GPU か。**amdgpu の sysfs と突き合わせてよい相手かの判定**.
+
+    llama.cpp が名乗る ``ROCm0`` が一番確か。Vulkan バックエンド経由だと
+    ``Vulkan0`` になるので、名前も見る。どちらでも決まらないときは False ——
+    **確かめられない相手と数字を比べない**。
+    """
+    if gpu.device_id and gpu.device_id.startswith("ROCm"):
+        return True
+    name = (gpu.name or "").lower()
+    return "amd" in name or "radeon" in name
 
 
 def _run(cmd: list[str]) -> str | None:

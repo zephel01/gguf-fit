@@ -526,3 +526,79 @@ def test_vram_check_uses_the_chosen_device():
     assert hw.vram_disagrees(31.8, MIXED, "CUDA0") is False
     assert hw.vram_disagrees(96.0, MIXED, "CUDA0") is True
     assert hw.vram_disagrees(96.0, MIXED, "ROCm0") is False
+
+
+# --- 警告は「起動するデバイス」についてだけ出す ----------------------------
+
+MIXED_DEVICES = """\
+load_backend: loaded CUDA backend
+load_backend: loaded ROCm backend
+Available devices:
+  CUDA0: NVIDIA GeForce RTX 5090 (32160 MiB, 31640 MiB free)
+  CUDA1: NVIDIA GeForce RTX 3090 (24156 MiB, 23880 MiB free)
+  ROCm0: AMD Radeon 8060S Graphics (98304 MiB, 25190 MiB free)
+"""
+
+
+def _mixed(fake_run):
+    fake_run({"llama-server": MIXED_DEVICES})
+    return hw.Hardware(gpus=hw.detect_llama_devices(), ram_gib=31.0,
+                       physical_cores=16, logical_cores=32,
+                       unified_memory=False, driver_free_gib=95.53)
+
+
+def test_a_warning_about_a_gpu_you_are_not_using_is_not_shown(fake_run):
+    """**使わない GPU の警告は出さない。**読み飛ばす癖がつくほうが害になる.
+
+    実機で CUDA0 に計画しているのに、ROCm0 の空きの食い違いを毎回出していた。
+    """
+    h = _mixed(fake_run)
+    assert h.free_figures_disagree("CUDA0") is None
+    assert h.tight_on_free_memory("CUDA0") is None
+
+
+def test_the_same_warning_is_shown_when_that_gpu_is_the_one_you_picked(fake_run):
+    h = _mixed(fake_run)
+    disagree = h.free_figures_disagree("ROCm0")
+    assert disagree is not None
+    assert disagree[0].device_id == "ROCm0"
+
+
+def test_without_a_device_it_still_looks_at_the_largest(fake_run):
+    """指定が無いときの挙動は変えない (予算も largest から取るため)."""
+    h = _mixed(fake_run)
+    assert h.free_figures_disagree() is not None
+
+
+def test_an_unknown_device_id_falls_back_rather_than_going_silent(fake_run):
+    """知らない識別子を渡されたら**黙るのではなく** largest を見る."""
+    h = _mixed(fake_run)
+    assert h.free_figures_disagree("Vulkan9") is not None
+
+
+def test_the_amd_sysfs_figure_is_not_compared_against_an_nvidia_card(fake_run):
+    """**別々の GPU の数字を並べて「食い違う」と言わない。**
+
+    driver_free_gib は amdgpu の sysfs から取った値。CUDA0 の空き 30.9 GiB を
+    それと比べれば当然ずれるが、それは食い違いではなく別の GPU。デバイスを
+    指定できるようにしたときに、実機の構成 (5090 + 3090 + 8060S) で表に出た。
+    """
+    h = _mixed(fake_run)
+    nvidia = h.gpu_by_device_id("CUDA0")
+    assert not hw.is_amd(nvidia)
+    assert h.free_figures_disagree("CUDA0") is None
+
+
+def test_an_amd_card_is_recognised_by_its_llama_cpp_id_or_its_name():
+    rocm = hw.Gpu(0, "Some Accelerator", 96.0, 0.5, device_id="ROCm0")
+    vulkan = hw.Gpu(0, "AMD Radeon 8060S Graphics", 96.0, 0.5, device_id="Vulkan0")
+    nvidia = hw.Gpu(0, "NVIDIA GeForce RTX 5090", 31.4, 0.5, device_id="CUDA0")
+    assert hw.is_amd(rocm)
+    assert hw.is_amd(vulkan)
+    assert not hw.is_amd(nvidia)
+
+
+def test_an_unidentifiable_gpu_is_not_assumed_to_be_amd():
+    """確かめられない相手とは数字を比べない。**推測して警告を出さない**."""
+    unknown = hw.Gpu(0, "", 96.0, 0.5, device_id=None)
+    assert not hw.is_amd(unknown)

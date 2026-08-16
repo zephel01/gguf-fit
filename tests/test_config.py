@@ -277,3 +277,14 @@ def test_cli_beats_refresh_too():
     cfg = _config.drop_detectable({"vram": 31.84})
     r = _config.resolve("vram", 24.0, cfg, detected=31.4)
     assert (r.value, r.source) == (24.0, "cli")
+
+
+def test_byte_counts_are_shown_as_integers_but_gib_keeps_its_decimal():
+    """**単位で決める。**24.0 GiB の .0 には意味があり、70720.0 バイトには無い."""
+    out = _config.render_show_config({
+        "vram": _config.Resolved(24.0, "cli"),
+        "kv_f16_bytes": _config.Resolved(70720.0, "config"),
+    }, None)
+    assert "24.0" in out
+    assert "70720 " in out
+    assert "70720.0" not in out

@@ -395,10 +395,16 @@ def main() -> int:
     r_threads = resolve("threads", args.threads, cfg,
                         detected=hw.suggested_threads())
     r_model_path = resolve("model_path", args.model_path, cfg)
+    # gguf-calibrate が書いた実測値も **--show-config に出す**。
+    # 「いま何が効いているか」を答えるのがこのツールの役目なのに、KV の単価
+    # だけ見えないのでは、19% 違う数字が黙って効いていることになる。
+    r_kv_f16 = resolve("kv_f16_bytes", None, cfg)
+    r_kv_q8 = resolve("kv_q8_bytes", None, cfg)
 
     settings = {"lang": r_lang, "vram": r_vram, "overhead": r_overhead,
                 "port": r_port, "device": r_device, "threads": r_threads,
-                "llama_servers": r_llama, "model_path": r_model_path}
+                "llama_servers": r_llama, "model_path": r_model_path,
+                "kv_f16_bytes": r_kv_f16, "kv_q8_bytes": r_kv_q8}
 
     if args.show_config:
         print(render_show_config(settings, cfg_path))
@@ -436,14 +442,14 @@ def main() -> int:
     # 実測が取れているのに指定値と 食い違うなら、そう言う。
     # 総量は足りていても、いま空いていなければ載らない。
     # 統合GPUで実際に見た: 総量 96 GiB / 空き 16.3 GiB。
-    disagree = hw.free_figures_disagree()
+    disagree = hw.free_figures_disagree(picked_device)
     if disagree is not None:
         dev, driver_free = disagree
         print("# " + t("warn_free_disagrees", lang, name=dev.name,
                        runtime=dev.free_gib, driver=driver_free,
                        total=dev.total_gib), file=sys.stderr)
 
-    tight = hw.tight_on_free_memory()
+    tight = hw.tight_on_free_memory(picked_device)
     if tight is not None:
         print("# " + t("warn_low_free", lang, name=tight.name,
                        total=tight.total_gib, free=tight.free_gib),

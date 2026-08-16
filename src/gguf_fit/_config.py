@@ -172,9 +172,23 @@ def render_show_config(resolved: dict[str, Resolved], path: Path | None) -> str:
     lines.append("")
     width = max((len(k) for k in resolved), default=0)
     for key, r in resolved.items():
-        shown = "(unset)" if r.value is None else r.value
-        lines.append(f"  {key:<{width}}  {shown!s:<24} <- {r.source}")
+        lines.append(f"  {key:<{width}}  {_show(key, r.value):<24} <- {r.source}")
     return "\n".join(lines)
+
+
+#: 見せるときに小数点を落とすキー。**単位で決める。型では決まらない**。
+#: TOML 上はどちらも float だが、24.0 GiB の ".0" には意味があり、
+#: 70720.0 バイトの ".0" には無い。
+INTEGRAL_KEYS = ("kv_f16_bytes", "kv_q8_bytes")
+
+
+def _show(key: str, value: Any) -> str:
+    """``--show-config`` での値の見せ方."""
+    if value is None:
+        return "(unset)"
+    if key in INTEGRAL_KEYS and isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
 
 
 def render_toml(resolved: dict[str, Resolved], hw_summary: str = "") -> str:
