@@ -12,27 +12,37 @@
     使用量 = 切片 + ctx x 1トークンあたりのバイト数
 
 **いつ測るかで答えが変わる。** ここが一度ハマった所なので書いておく。
-同じ ctx 65,536 / 同じサーバで、こういう食い違いが出た::
+同じ ctx 65,536 / 同じサーバで、起動前からの増分がこうなった::
 
-    ロード直後 (推論なし)   23,922 MiB
-    推論を回している最中     24,068 MiB   (24,013 - 24,115 の幅で揺れる)
-    差                        +142 MiB
+    ロード直後 (推論なし)       23,922 MiB
+    リクエストを1回通したあと   24,022 MiB   (+100)
+    ベンチマークを回している間  24,064 MiB   (+142、24,013-24,115 で揺れる)
 
-f16 でも q8_0 でも差は**きっかり +142 MiB で同じ**だった。KV の型に
-依存しないので、これは KV ではなく**推論そのものが確保する分**。
+**この +100 も +142 も、f16 と q8_0 でまったく同じ値**だった。KV の型にも
+ctx にも依存しないので、KV ではなく**推論そのものが確保する分**。
 
-まずかったのは、この2つを混ぜて直線を引いたこと。ctx 32,768 を
+まずかったのは、条件の違う点を混ぜて直線を引いたこと。ctx 32,768 を
 ロード直後に、ctx 65,536 を推論中に測って傾きを出すと、本来は切片に
-乗るべき +142 MiB が傾きに化けて **73.5 KB/token** になる。条件をそろえた
+乗るべき定数が傾きに化けて **73.5 KB/token** になる。条件をそろえた
 今の値は **69.1 KB/token** で、理論値 68.0 の 1.016 倍。こちらが正しい。
+
+定数であることは実測で確かめてある。ウォームアップを入れて測り直すと、
+4点とも +100 MiB ちょうど動き、**傾きは 1 バイトも変わらず**切片だけが
+19.045 → 19.14 GiB に上がった。傾きは測るタイミングに対して頑健で、
+切片だけが動く —— 見積り式の形が正しいことの裏付けでもある。
 
 なので、このツールは**1点につき2回測る**::
 
-    ロード直後  →  小さいリクエストを1回投げる  →  もう一度
+    ロード直後  →  リクエストを1回通す  →  もう一度
 
 当てはめには**後者**を使う。「入るか」を判断したいのだから、走っている
-ときの値でなければ意味がない。差は結果に併記するので、自分の環境で
-どれだけ乗るかが見える。
+ときの値でなければ意味がない。差は結果に併記する。
+
+**まだ埋まっていない差がある。** 8トークンのリクエスト1回では +100 まで
+しか出ず、本番のベンチマークで見えた +142 には 42 MiB 足りない。だから
+既定のウォームアップは**バッチ1つ分のプロンプトを流す** (``--warmup-tokens``、
+既定 2048 = ``--batch-size`` と同じ)。それでも残るなら、それは「短い
+リクエストでは再現しない分」として ``--overhead`` の余裕で見るしかない。
 
 **差分で測る。** 起動前後の差を取るので、デスクトップや他プロセスの使用量が
 混ざらない。``--device CUDA0`` と nvidia-smi の並び順が一致しない問題も、
@@ -59,10 +69,15 @@ LOAD_TIMEOUT_S = 600
 SETTLE_S = 4
 #: 何秒おきに見るか
 POLL_S = 2
-#: ウォームアップで生成するトークン数。確保を起こさせるだけなので少しでよい
+#: ウォームアップで生成するトークン数。デコード側を通せばよいので少しでよい
 WARMUP_TOKENS = 8
+#: ウォームアップで流すプロンプトのトークン数。**既定の --batch-size と同じ**。
+#: 8トークンだけでは本番の確保に 42 MiB 届かなかったので、バッチを1つ埋める。
+WARMUP_PROMPT_TOKENS = 2048
+#: プロンプトに使うトークンID。どの語彙にも実在する低い ID なら中身は何でもよい
+WARMUP_TOKEN_ID = 100
 #: ウォームアップの応答を待つ上限 (秒)
-WARMUP_TIMEOUT_S = 120
+WARMUP_TIMEOUT_S = 300
 
 
 class Point(NamedTuple):
@@ -183,35 +198,58 @@ def wait_until_ready(port: int, proc: subprocess.Popen, *,
     raise RuntimeError(f"llama-server did not answer /health within {timeout_s}s")
 
 
-def warm_up(port: int, *, tokens: int = WARMUP_TOKENS,
-            timeout_s: int = WARMUP_TIMEOUT_S) -> bool:
-    """小さいリクエストを1回だけ投げる。成功したら True.
+def warmup_payloads(prompt_tokens: int = WARMUP_PROMPT_TOKENS,
+                    predict: int = WARMUP_TOKENS) -> list[dict]:
+    """ウォームアップに投げる本文の候補。**上から順に試す**.
 
-    **推論そのものが確保する分**を出させるため。ロード直後との差は、
-    実測で ctx 65,536 のとき +142 MiB あった (f16 / q8_0 とも同じ)。
+    llama.cpp の ``/completion`` は prompt にトークンIDの配列を取れる。
+    文字列だと「何トークンになるか」が語彙次第で分からないので、**バッチを
+    きっちり1つ埋めたいときは配列のほうが確実**。受け付けないサーバのために
+    文字列版も残しておく (こちらは長さが概算になる)。
     """
-    body = json.dumps({"prompt": "hi", "n_predict": tokens,
-                       "temperature": 0}).encode()
-    for path in ("/completion", "/v1/completions"):
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{port}{path}", data=body,
-            headers={"Content-Type": "application/json"})
-        try:
-            with urllib.request.urlopen(req, timeout=timeout_s) as r:
-                if 200 <= r.status < 300:
-                    r.read()
-                    return True
-        except (urllib.error.URLError, OSError, ValueError):
-            continue
+    return [
+        {"prompt": [WARMUP_TOKEN_ID] * prompt_tokens,
+         "n_predict": predict, "temperature": 0},
+        {"prompt": "lorem ipsum dolor sit amet " * max(1, prompt_tokens // 5),
+         "n_predict": predict, "temperature": 0},
+    ]
+
+
+def warm_up(port: int, *, prompt_tokens: int = WARMUP_PROMPT_TOKENS,
+            tokens: int = WARMUP_TOKENS,
+            timeout_s: int = WARMUP_TIMEOUT_S) -> bool:
+    """リクエストを1回だけ通す。成功したら True.
+
+    **推論そのものが確保する分**を出させるため。ロード直後との差は、実測で
+    ctx 65,536 のとき 8トークンのリクエストで +100 MiB、本番のベンチマークを
+    回している間で +142 MiB だった (どちらも f16 / q8_0 で同じ値)。
+    プロンプトでバッチを1つ埋めるのは、その 42 MiB を詰めるため。
+    """
+    for payload in warmup_payloads(prompt_tokens, tokens):
+        body = json.dumps(payload).encode()
+        for path in ("/completion", "/v1/completions"):
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}{path}", data=body,
+                headers={"Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=timeout_s) as r:
+                    if 200 <= r.status < 300:
+                        r.read()
+                        return True
+            except (urllib.error.URLError, OSError, ValueError):
+                continue
     return False
 
 
 def measure_point(launch_cmd: list[str], kv_mode: str, ctx: int, *,
-                  port: int, warmup: bool = True, verbose: bool = True) -> Point:
+                  port: int, warmup: bool = True,
+                  warmup_prompt_tokens: int = WARMUP_PROMPT_TOKENS,
+                  verbose: bool = True) -> Point:
     """サーバを起動して VRAM の増分を測り、落とす.
 
-    ``warmup=True`` なら、ロード直後と**小さいリクエストを1回通したあと**の
-    両方を測る。当てはめに使うのは後者。
+    ``warmup=True`` なら、ロード直後と**リクエストを1回通したあと**の両方を
+    測る。当てはめに使うのは後者 —— 「入るか」を見たいのだから、走っている
+    ときの値でなければ意味がない。
     """
     before = _gpu_used_mib()
     if not before:
@@ -227,7 +265,7 @@ def measure_point(launch_cmd: list[str], kv_mode: str, ctx: int, *,
         loaded = _biggest_delta(before, _gpu_used_mib())
         used = loaded
         if warmup:
-            if warm_up(port):
+            if warm_up(port, prompt_tokens=warmup_prompt_tokens):
                 time.sleep(SETTLE_S)
                 used = max(loaded, _biggest_delta(before, _gpu_used_mib()))
             elif verbose:
@@ -332,8 +370,13 @@ def main() -> int:
                     help="port for the throwaway servers (default: 18085)")
     ap.add_argument("--no-warmup", action="store_true",
                     help="read VRAM straight after loading, without sending a "
-                         "request. Faster, but ~150 MiB low: inference itself "
-                         "allocates, and that has to fit too.")
+                         "request. Faster, but ~100-150 MiB low: inference "
+                         "itself allocates, and that has to fit too.")
+    ap.add_argument("--warmup-tokens", type=int, default=WARMUP_PROMPT_TOKENS,
+                    dest="warmup_tokens",
+                    help=f"prompt length for the warm-up request, in tokens "
+                         f"(default: {WARMUP_PROMPT_TOKENS}, one --batch-size). "
+                         f"Raise it if you run with a bigger batch.")
     ap.add_argument("--extra", default=None,
                     help="extra flags passed through verbatim, e.g. "
                          "'--spec-type draft-mtp'. Use the same ones you run with.")
@@ -355,7 +398,8 @@ def main() -> int:
     extra = args.extra.split() if args.extra else []
     warmup = not args.no_warmup
 
-    tail = "one short request each" if warmup else "no inference at all"
+    tail = (f"one {args.warmup_tokens}-token request each" if warmup
+            else "no inference at all")
     print(f"measuring {len(ctxs) * len(kvs)} points "
           f"(each server is started, measured and killed; {tail})",
           file=sys.stderr)
@@ -366,8 +410,9 @@ def main() -> int:
             cmd = build_launch_cmd(str(binary), args.model, ctx, kv_mode,
                                    device, threads, args.port, extra)
             try:
-                points.append(measure_point(cmd, kv_mode, ctx, port=args.port,
-                                            warmup=warmup))
+                points.append(measure_point(
+                    cmd, kv_mode, ctx, port=args.port, warmup=warmup,
+                    warmup_prompt_tokens=args.warmup_tokens))
             except (RuntimeError, OSError) as e:
                 print(f"!! {kv_mode} ctx {ctx}: {e}", file=sys.stderr)
         measured += points

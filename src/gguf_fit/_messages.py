@@ -171,9 +171,9 @@ MESSAGES: dict[str, dict[str, str]] = {
     },
     "hdr_thin": {
         "en": "!! only {hr:.2f} GiB of headroom. Inference itself allocated another "
-              "0.14 GiB after load when measured, so this can still fail to start",
-        "ja": "⚠️ 余りが {hr:.2f} GiB しかありません。実測では推論開始後に"
-              "さらに 0.14 GiB 増えたので、これでも起動に失敗しえます",
+              "0.10-0.14 GiB after load when measured, so this can still fail to start",
+        "ja": "⚠️ 余りが {hr:.2f} GiB しかありません。実測では推論を通すと"
+              "さらに 0.10〜0.14 GiB 増えたので、これでも起動に失敗しえます",
     },
     "hdr_thin_try_q8": {
         "en": "   Use q8_0 for the KV cache (-ctk q8_0 -ctv q8_0), or drop ctx one step",
