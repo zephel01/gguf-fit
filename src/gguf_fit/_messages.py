@@ -170,10 +170,10 @@ MESSAGES: dict[str, dict[str, str]] = {
         "ja": "❌ 予算を {over:.2f} GiB 超えています。起動しません",
     },
     "hdr_thin": {
-        "en": "!! only {hr:.2f} GiB of headroom. The overhead has a single calibration "
-              "point, so a measurement above it means a failed start",
-        "ja": "⚠️ 余りが {hr:.2f} GiB しかありません。オーバーヘッドの較正点は1つ"
-              "しかないので、実測がこれを超えると起動に失敗します",
+        "en": "!! only {hr:.2f} GiB of headroom. Inference itself allocated another "
+              "0.14 GiB after load when measured, so this can still fail to start",
+        "ja": "⚠️ 余りが {hr:.2f} GiB しかありません。実測では推論開始後に"
+              "さらに 0.14 GiB 増えたので、これでも起動に失敗しえます",
     },
     "hdr_thin_try_q8": {
         "en": "   Use q8_0 for the KV cache (-ctk q8_0 -ctv q8_0), or drop ctx one step",
@@ -194,6 +194,18 @@ MESSAGES: dict[str, dict[str, str]] = {
     "hdr_hybrid": {
         "en": "hybrid attention: only {n_kv}/{n_all} layers hold KV = {kb:.0f} KB/token",
         "ja": "ハイブリッド注意: {n_kv}/{n_all} 層のみ KV 保持 = {kb:.0f} KB/token",
+    },
+    "hdr_kv_measured": {
+        "en": "KV {kv} = {kb:.1f} KB/token, measured here (gguf-calibrate), "
+              "not derived from the GGUF",
+        "ja": "KV {kv} = {kb:.1f} KB/token。GGUF からの計算ではなく"
+              "このマシンでの実測 (gguf-calibrate)",
+    },
+    "hdr_kv_derived": {
+        "en": "KV {kv} = {kb:.1f} KB/token, derived from the GGUF. Real usage ran "
+              "2-19% higher when measured; gguf-calibrate settles it",
+        "ja": "KV {kv} = {kb:.1f} KB/token。GGUF からの計算値。実測では "
+              "2〜19% 多かったので、gguf-calibrate で確かめられます",
     },
     "sec_server": {
         "en": "--- llama-server ---",

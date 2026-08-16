@@ -57,12 +57,13 @@ than the one you're on.
 
 ```console
 # ===== Qwen3.8-27B-Q5_K_M / ctx 65,536 / KV f16 =====
-# estimate: model 18.47 + KV 4.25 + overhead 1.00 = 23.72 GiB / budget 24.0 GiB
-# !! only 0.28 GiB of headroom. The overhead has a single calibration point, so a
-#    measurement above it means a failed start
+# estimate: model 18.47 + KV 4.32 + overhead 1.00 = 23.78 GiB / budget 24.0 GiB
+# !! only 0.22 GiB of headroom. Inference itself allocated another 0.14 GiB after
+#    load when measured, so this can still fail to start
 #   Use q8_0 for the KV cache (-ctk q8_0 -ctv q8_0), or drop ctx one step
 # native ctx = 262,144  / no rope scaling
 # hybrid attention: only 17/65 layers hold KV = 68 KB/token
+# KV f16 = 69.1 KB/token, measured here (gguf-calibrate), not derived from the GGUF
 
 # --- llama-server ---
 # found 4 MTP tensors -> adding --spec-type draft-mtp
@@ -91,12 +92,13 @@ Output is English by default; `--lang ja` switches it to Japanese.
 
 ## Why
 
-Two commands, split along a real seam:
+Three commands, split along real seams:
 
 | | |
 | :-- | :-- |
 | **`gguf-probe`** | Reads the file. Reports what is actually in it. |
 | **`gguf-plan`** | Takes that plus a VRAM budget → a launch command and a config. |
+| **`gguf-calibrate`** | Measures this machine once, so the budget arithmetic is not a guess. |
 
 Each GGUF field decides a specific setting:
 
@@ -143,19 +145,25 @@ Qwen3.8-27B has 65 layers, but only **17** hold a KV cache. The other 48 carry a
 usage = model file + KV cache + overhead
 ```
 
-Overhead — compute buffers, CUDA context, speculative decoding — is calibrated against
-measurements:
+Both the KV rate and the overhead are **measured**, not assumed. `gguf-calibrate` starts
+`llama-server` at two context sizes and fits the line — the relationship is exactly linear,
+so two points determine it. On Qwen3.8-27B-Q5_K_M / RTX 5090 / `-fa on` / `--spec-type
+draft-mtp`:
 
-| | GiB |
-| :-- | --: |
-| Qwen3.8-27B-Q5_K_M file | 18.47 |
-| KV cache, ctx 65,536, f16 | 4.25 |
-| subtotal | 22.72 |
-| **measured** (`llama-server`, RTX 5090) | **23.50** |
-| **→ overhead** | **0.78** |
+| | measured | from the GGUF | ratio |
+| :-- | --: | --: | --: |
+| KV f16 | **69.1 KB/token** | 68.0 | 1.02 |
+| KV q8_0 | **43.1 KB/token** | 36.1 | **1.19** |
+| intercept | 19.02 GiB | file is 18.47 | → overhead **0.55** |
+| + one request | +0.14 GiB | | → overhead **0.69** |
 
-The default rounds up to **1.0 GiB**. Override with `--overhead` — and please open an issue
-with whatever you measure.
+Max error across the four points: **0 MiB**. The default overhead rounds up to **1.0 GiB**.
+
+> [!IMPORTANT]
+> These numbers move with the llama.cpp version, the backend, the launch flags, and any
+> change to how quantization is implemented. Run `gguf-calibrate` on your own machine and
+> put the result in `gguf-fit.toml`. `gguf-plan` says in its output whether the figure it
+> used was measured or derived.
 
 > [!WARNING]
 > **Units flip conclusions here.** GGUF's `size_gb` is bytes ÷ 10⁹ (**GB**). A GPU's "24GB"
@@ -165,21 +173,42 @@ with whatever you measure.
 <summary><b>Quantized KV saves less than the arithmetic suggests</b></summary>
 
 `q8_0` stores 32 values as 32 int8 bytes plus one fp16 scale — 34 bytes against f16's 64,
-a ratio of **0.531**. Measured on one model at ctx 65,536:
+a ratio of **0.531**. Measured, the ratio is **0.624**:
 
-| | measured |
+| at ctx 65,536 | measured | predicted from 0.531 |
+| :-- | --: | --: |
+| KV f16 | 4.32 GiB | 4.25 |
+| KV q8_0 | **2.69 GiB** | 2.26 |
+| saving | **1.62 GiB** | 2.02 |
+
+The extra ~0.4 GiB is most likely dequantization scratch space — 0.531 describes the storage
+format, not what the kernel needs while it runs.
+
+This changes an answer: on a 24 GiB card, the arithmetic says `q8_0` reaches ctx 131,072,
+and the measurement says it needs **24.5 GiB** and does not fit. An earlier version of this
+README made that claim. `gguf-plan` uses the measured figure when the config file has one.
+
+</details>
+
+<details>
+<summary><b>When you measure changes the answer too</b></summary>
+
+Same server, same ctx 65,536, two readings:
+
+| | MiB |
 | :-- | --: |
-| KV f16 | 24,068 MiB |
-| KV q8_0 | 22,362 MiB |
-| saving | **1,706 MiB (1.67 GiB)** |
-| predicted from 0.531 | 1.99 GiB |
+| straight after loading | 23,922 |
+| while inference is running | 24,068 (drifting 24,013–24,115) |
+| difference | **+142** |
 
-The extra ~0.33 GiB is most likely dequantization scratch space. With one context length
-measured, "the ratio is really 0.61" and "the ratio is 0.531 but overhead grows" fit equally
-well; a second measurement at a different `--ctx-size` would separate them.
+The difference was **exactly the same 142 MiB for f16 and for q8_0**, so it does not scale
+with the KV cache — it is what inference itself allocates.
 
-The default uses the theoretical 0.531, so **`gguf-plan` slightly over-estimates how much
-`q8_0` saves.**
+That matters because mixing the two corrupts the fit. Measuring ctx 32,768 after load and
+ctx 65,536 during inference puts a constant into the slope and gives **73.5 KB/token**; with
+both points taken the same way it is **69.1**. This project made that mistake. `gguf-calibrate`
+now waits for the server's own `/health`, sends one short request, and measures after it —
+and prints how much that request added.
 
 </details>
 
@@ -213,6 +242,45 @@ gguf-plan gguf.json --vram 24 --pick Q5_K_M --ctx 131072
 
 Omit `--ctx` and it rounds **down** to a standard context size rather than filling the budget
 to the brim: 69,632 would leave 0.02 GiB of headroom and gain 6% of context over 65,536.
+
+</details>
+
+<details open>
+<summary><b>gguf-calibrate</b> — measure, so the estimate stops being a guess</summary>
+
+```bash
+gguf-calibrate --model /models/Qwen3.8-27B-Q5_K_M.gguf \
+  --ctx 32768,65536 --kv f16,q8_0 \
+  --extra "--spec-type draft-mtp"        # use the flags you actually run with
+```
+
+It starts `llama-server` at each context size, waits for `/health`, sends one 8-token
+request, reads the VRAM delta from `nvidia-smi`, and kills the server. Four points take a
+few minutes and no benchmark.
+
+```console
+calibration result
+
+  f16     69.1 KB/token   intercept 19.04 GiB   (2 points, max error 0 MiB)
+  q8_0    43.1 KB/token   intercept 19.00 GiB   (2 points, max error 0 MiB)
+
+  q8_0 / f16 = 0.624   (the naive 34/64-byte figure would say 0.531)
+
+  one request added 142 MiB on top of the load-time figure; that is what these
+  numbers include
+
+--- paste into gguf-fit.toml ---
+kv_f16_bytes = 70720   # 69.1 KB/token, 2 points
+kv_q8_bytes = 44096    # 43.1 KB/token, 2 points
+```
+
+Paste those two lines into `gguf-fit.toml` and `gguf-plan` uses them instead of the GGUF
+arithmetic. Requires `nvidia-smi`; `--no-warmup` skips the request but reads ~150 MiB low.
+
+> [!NOTE]
+> At least two `--ctx` values are required. One point cannot separate the slope from the
+> intercept — "the KV ratio is 0.61" and "the ratio is 0.531 but overhead grew" predict the
+> same number at a single context length. `gguf-calibrate` refuses rather than pick one.
 
 </details>
 
@@ -296,6 +364,10 @@ vram     = 24.0
 overhead = 1.0
 device   = "CUDA0"
 port     = 8085
+
+# from gguf-calibrate. Present → used instead of the GGUF arithmetic.
+kv_f16_bytes = 70720
+kv_q8_bytes  = 44096
 ```
 
 ```console

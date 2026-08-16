@@ -340,3 +340,85 @@ def test_single_gpu_has_no_extra_noise():
     assert "--device CUDA0" in out
     assert "does NOT match" not in out
     assert "no NVIDIA GPU" not in out
+
+
+# --- 実測値を使う (gguf-calibrate) ----------------------------------------
+
+#: 実測 (Qwen3.8-27B-Q5_K_M / RTX 5090 / CUDA / draft-mtp)
+MEASURED = gguf_plan.KvRates(f16=70720, q8_0=44096)
+
+
+def test_measured_bytes_beat_the_gguf_arithmetic():
+    """**測った値があるなら、計算値を使ってはいけない。**"""
+    assert gguf_plan.per_token_bytes(Q5_K_M, "f16") == 69632
+    assert gguf_plan.per_token_bytes(Q5_K_M, "f16", MEASURED) == 70720
+    assert gguf_plan.per_token_bytes(Q5_K_M, "q8_0", MEASURED) == 44096
+
+
+def test_the_q8_error_is_the_one_that_matters():
+    """f16 は 1.6% しかずれないが、q8_0 は 19% ずれる.
+
+    理論比 0.531 は格納形式だけの話で、逆量子化の作業領域が入っていない。
+    ここを計算値のままにすると、q8_0 の節約を過大に見積もる。
+    """
+    derived = gguf_plan.per_token_bytes(Q5_K_M, "q8_0")
+    assert MEASURED.q8_0 / derived == pytest.approx(1.19, abs=0.02)
+    assert MEASURED.f16 / gguf_plan.per_token_bytes(Q5_K_M, "f16") < 1.02
+
+
+def test_measuring_shrinks_the_ctx_that_fits_a_24gib_card():
+    """**この差で結論が変わる。**q8_0 で 131,072 は「載る」から「載らない」へ.
+
+    実測 (切片から求めた実効オーバーヘッド 0.69) で 131,072 は 24.5 GiB。
+    24 GiB カードには入らない。README に一度「q8_0 なら 128k」と書いた。
+    """
+    used = (gguf_plan.file_gib(Q5_K_M)
+            + gguf_plan.kv_gib(Q5_K_M, 131072, "q8_0", MEASURED) + 0.69)
+    assert used > 24.0
+    derived = (gguf_plan.file_gib(Q5_K_M)
+               + gguf_plan.kv_gib(Q5_K_M, 131072, "q8_0") + 0.69)
+    assert derived < 24.0          # 計算値だと入ると言ってしまう
+
+
+def test_max_ctx_uses_the_measured_figure():
+    a = gguf_plan.max_ctx(Q5_K_M, 24.0, "q8_0", 1.0)
+    b = gguf_plan.max_ctx(Q5_K_M, 24.0, "q8_0", 1.0, MEASURED)
+    assert b < a
+
+
+def test_nothing_measured_leaves_the_behaviour_unchanged():
+    """空の KvRates は「測っていない」。0 として扱わない."""
+    empty = gguf_plan.KvRates()
+    assert not empty.has_any
+    assert (gguf_plan.per_token_bytes(Q5_K_M, "q8_0", empty)
+            == gguf_plan.per_token_bytes(Q5_K_M, "q8_0"))
+
+
+def test_config_values_are_read_and_rubbish_is_ignored():
+    assert gguf_plan.KvRates.from_config(
+        {"kv_f16_bytes": 70720, "kv_q8_bytes": 44096}) == MEASURED
+    assert not gguf_plan.KvRates.from_config({}).has_any
+    # 0 や負や文字列は「測っていない」と同じ扱いにする
+    for bad in (0, -1, "70720", None):
+        assert gguf_plan.KvRates.from_config({"kv_f16_bytes": bad}).f16 is None
+
+
+def test_only_one_mode_measured_still_uses_it():
+    """片方だけ測った場合、測ったほうだけ実測を使う."""
+    half = gguf_plan.KvRates(f16=70720)
+    assert gguf_plan.per_token_bytes(Q5_K_M, "f16", half) == 70720
+    assert gguf_plan.per_token_bytes(Q5_K_M, "q8_0", half) == pytest.approx(
+        69632 * gguf_plan.Q8_FACTOR)
+
+
+def test_the_output_says_where_the_number_came_from():
+    """**測った値か計算値かを黙らない。**19% 違いうる数字なので."""
+    measured = gguf_plan.emit_config(Q5_K_M, 65536, "f16", 32.0, 1.0,
+                                     "/m.gguf", 8085, "CUDA0",
+                                     calibrated=MEASURED)
+    derived = gguf_plan.emit_config(Q5_K_M, 65536, "f16", 32.0, 1.0,
+                                    "/m.gguf", 8085, "CUDA0")
+    assert "measured here" in measured
+    assert "69.1 KB/token" in measured
+    assert "derived from the GGUF" in derived
+    assert "68.0 KB/token" in derived

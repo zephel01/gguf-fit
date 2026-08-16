@@ -22,16 +22,18 @@ GGUF の `size_gb` は **バイト ÷ 10^9 (GB)**。一方 GPU の「24GB」は
 
     使用量 = モデルファイル + KVキャッシュ + オーバーヘッド
 
-オーバーヘッド (計算バッファ・CUDAコンテキスト・投機デコードのバッファ) は
-実測1点から較正した:
+Qwen3.8-27B Q5_K_M / -fa on / --spec-type draft-mtp / RTX 5090 で、ctx を
+2点測って直線を出した (`gguf-calibrate`):
 
-    Qwen3.8-27B Q5_K_M / ctx 65536 / KV f16 / -fa on / --spec-type draft-mtp
-      ファイル 18.47 GiB + KV 4.25 GiB = 22.72 GiB
-      実測 (llama-server) 23.5 GiB
-      → オーバーヘッド 0.78 GiB
+    KV f16   69.1 KB/token     GGUF からの計算 68.0 の 1.016 倍
+    KV q8_0  43.1 KB/token     理論 (0.531 倍) の 36.1 に対して 1.19 倍
+    切片     19.02 GiB         = ファイル 18.47 + オーバーヘッド 0.55
+    推論中はさらに +0.14 GiB   → オーバーヘッド 0.69 GiB
 
-較正点が1つしかないので、既定は安全側に **1.0 GiB** を置く。
-実測が増えたら `--overhead` で上書きすること。
+既定は安全側に **1.0 GiB**。ただし**この数字は環境で変わる**ので、
+自分のマシンでは `gguf-calibrate` を回して `gguf-fit.toml` に
+`kv_f16_bytes` / `kv_q8_bytes` を書くこと。書いてあればそちらを使い、
+無ければ GGUF からの計算値に落ちる。どちらを使ったかは出力に書く。
 """
 
 from __future__ import annotations
@@ -40,6 +42,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 from . import _hardware
 from ._config import (
@@ -77,41 +80,83 @@ NON_THINKING_SAMPLING = {
 }
 
 
+class KvRates(NamedTuple):
+    """このマシンで実測した1トークンあたりのバイト数.
+
+    ``None`` は**測っていない**という意味で、0 ではない。測っていなければ
+    GGUF からの計算値に落ちる。``gguf-calibrate`` が両方を埋める。
+    """
+
+    f16: float | None = None
+    q8_0: float | None = None
+
+    @classmethod
+    def from_config(cls, cfg: dict) -> KvRates:
+        def num(key):
+            v = cfg.get(key)
+            return float(v) if isinstance(v, (int, float)) and v > 0 else None
+        return cls(num("kv_f16_bytes"), num("kv_q8_bytes"))
+
+    def get(self, kv_mode: str) -> float | None:
+        return self.q8_0 if kv_mode == "q8_0" else self.f16
+
+    @property
+    def has_any(self) -> bool:
+        return self.f16 is not None or self.q8_0 is not None
+
+
 def file_gib(rec: dict) -> float:
     return rec["size_gb"] * 1e9 / GIB
 
 
-def kv_gib(rec: dict, ctx: int, kv_mode: str) -> float:
-    per_tok = (rec.get("kv_cache") or {}).get("bytes_per_token_f16")
-    if not per_tok:
+def per_token_bytes(rec: dict, kv_mode: str,
+                    calibrated: KvRates | None = None) -> float:
+    """1トークンあたりの KV バイト数。**測った値があればそちらを使う**.
+
+    GGUF からの計算は下振れする。同じモデル・同じサーバで f16 は 68.0 に対して
+    実測 69.1 KB/token (1.6% 増)、q8_0 は理論 36.1 に対して 43.1 (19% 増)。
+    q8_0 のずれが大きいのは、比 0.531 が格納形式だけの話で、逆量子化の
+    作業領域が入っていないため。
+    """
+    if calibrated is not None:
+        measured = calibrated.get(kv_mode)
+        if measured:
+            return measured
+    f16 = (rec.get("kv_cache") or {}).get("bytes_per_token_f16")
+    if not f16:
         return 0.0
-    factor = Q8_FACTOR if kv_mode == "q8_0" else 1.0
-    return per_tok * ctx * factor / GIB
+    return f16 * (Q8_FACTOR if kv_mode == "q8_0" else 1.0)
 
 
-def max_ctx(rec: dict, vram_gib: float, kv_mode: str, overhead: float) -> int:
+def kv_gib(rec: dict, ctx: int, kv_mode: str,
+           calibrated: KvRates | None = None) -> float:
+    return per_token_bytes(rec, kv_mode, calibrated) * ctx / GIB
+
+
+def max_ctx(rec: dict, vram_gib: float, kv_mode: str, overhead: float,
+            calibrated: KvRates | None = None) -> int:
     """VRAM 予算に収まる最大の ctx。native ctx を超えない。CTX_STEP に切り下げ。"""
-    per_tok = (rec.get("kv_cache") or {}).get("bytes_per_token_f16")
+    per_tok = per_token_bytes(rec, kv_mode, calibrated)
     if not per_tok:
         return 0
-    factor = Q8_FACTOR if kv_mode == "q8_0" else 1.0
     budget = (vram_gib - overhead - file_gib(rec)) * GIB
     if budget <= 0:
         return 0
-    n = int(budget / (per_tok * factor))
+    n = int(budget / per_tok)
     n -= n % CTX_STEP
     native = rec.get("context_length") or n
     return max(0, min(n, native))
 
 
-def recommended_ctx(rec: dict, vram_gib: float, kv_mode: str, overhead: float) -> int:
+def recommended_ctx(rec: dict, vram_gib: float, kv_mode: str, overhead: float,
+                    calibrated: KvRates | None = None) -> int:
     """`--ctx` 未指定のときに勧める ctx。
 
     ``max_ctx`` の「予算に入る最大値」をそのまま使うと 69,632 のような半端な
     値になり、余りが 0.02 GiB しか残らない。オーバーヘッドの較正点は1つしか
     ないので、その誤差で起動に失敗する。**きりのいい値に丸めて余裕を残す。**
     """
-    cap = max_ctx(rec, vram_gib, kv_mode, overhead)
+    cap = max_ctx(rec, vram_gib, kv_mode, overhead, calibrated)
     if not cap:
         return 0
     fits = [c for c in STANDARD_CTX if c <= cap]
@@ -119,9 +164,10 @@ def recommended_ctx(rec: dict, vram_gib: float, kv_mode: str, overhead: float) -
 
 
 def headroom_gib(rec: dict, ctx: int, kv_mode: str, vram_gib: float,
-                 overhead: float) -> float:
+                 overhead: float, calibrated: KvRates | None = None) -> float:
     """この設定で VRAM がどれだけ余るか (GiB)。負なら入らない。"""
-    return vram_gib - (file_gib(rec) + kv_gib(rec, ctx, kv_mode) + overhead)
+    return vram_gib - (file_gib(rec) + kv_gib(rec, ctx, kv_mode, calibrated)
+                       + overhead)
 
 
 def model_path_of(rec: dict, override: str | None) -> str:
@@ -160,15 +206,15 @@ def short(rec: dict) -> str:
     return rec["file"].replace(".gguf", "")
 
 
-def cmd_table(recs, vram, overhead, ctx_req, lang=DEFAULT_LANG):
+def cmd_table(recs, vram, overhead, ctx_req, lang=DEFAULT_LANG, calibrated=None):
     rows = []
     for r in sorted(recs, key=lambda d: d["size_gb"]):
-        f16 = max_ctx(r, vram, "f16", overhead)
-        q8 = max_ctx(r, vram, "q8_0", overhead)
+        f16 = max_ctx(r, vram, "f16", overhead, calibrated)
+        q8 = max_ctx(r, vram, "q8_0", overhead, calibrated)
         fit = ""
         if ctx_req:
-            need_f16 = file_gib(r) + kv_gib(r, ctx_req, "f16") + overhead
-            need_q8 = file_gib(r) + kv_gib(r, ctx_req, "q8_0") + overhead
+            need_f16 = file_gib(r) + kv_gib(r, ctx_req, "f16", calibrated) + overhead
+            need_q8 = file_gib(r) + kv_gib(r, ctx_req, "q8_0", calibrated) + overhead
             if need_f16 <= vram:
                 fit = t("fits_f16", lang, used=need_f16)
             elif need_q8 <= vram:
@@ -197,17 +243,18 @@ def cmd_table(recs, vram, overhead, ctx_req, lang=DEFAULT_LANG):
 def emit_config(rec: dict, ctx: int, kv_mode: str, vram: float, overhead: float,
                 model_path: str, port: int, device: str | None,
                 lang: str = DEFAULT_LANG, threads: int | None = None,
-                device_ambiguous: bool = False, n_gpus: int = 0) -> str:
+                device_ambiguous: bool = False, n_gpus: int = 0,
+                calibrated: KvRates | None = None) -> str:
     think = rec.get("chat_template_has_think")
     samp = THINKING_SAMPLING if think else NON_THINKING_SAMPLING
     mtp = bool(rec.get("mtp_tensor_count"))
-    used = file_gib(rec) + kv_gib(rec, ctx, kv_mode) + overhead
+    used = file_gib(rec) + kv_gib(rec, ctx, kv_mode, calibrated) + overhead
     max_tokens, mt_key, mt_kw = max_tokens_for(ctx)
 
     L = []
     L.append("# " + t("hdr_title", lang, name=short(rec), ctx=ctx, kv=kv_mode))
     L.append("# " + t("hdr_estimate", lang, model=file_gib(rec),
-                      kv=kv_gib(rec, ctx, kv_mode), overhead=overhead,
+                      kv=kv_gib(rec, ctx, kv_mode, calibrated), overhead=overhead,
                       used=used, vram=vram))
     hr = vram - used
     if hr < 0:
@@ -227,6 +274,12 @@ def emit_config(rec: dict, ctx: int, kv_mode: str, vram: float, overhead: float,
         L.append("# " + t("hdr_hybrid", lang, n_kv=len(rec["kv_layers"]),
                           n_all=rec["kv_cache"]["total_layers"],
                           kb=rec["kv_cache"]["bytes_per_token_f16"] / 1024))
+    # **その数字がどこから来たかを言う。**測った値と計算値では 19% 違いうる。
+    per_tok = per_token_bytes(rec, kv_mode, calibrated)
+    if per_tok:
+        measured = calibrated is not None and calibrated.get(kv_mode)
+        L.append("# " + t("hdr_kv_measured" if measured else "hdr_kv_derived",
+                          lang, kv=kv_mode, kb=per_tok / 1024))
     L.append("")
     L.append("# " + t("sec_server", lang))
     # 注記は**コマンドの外**に出す。継続行 (\) の途中に # を書くと
@@ -370,6 +423,9 @@ def main() -> int:
         ap.error("could not detect any GPU, so --vram is required "
                  "(or set vram in the config file)")
     vram, overhead = float(r_vram.value), float(r_overhead.value)
+    # gguf-calibrate が書いた実測値。無ければ None のままで、GGUF からの
+    # 計算値に落ちる。**測っていないものを測ったことにはしない。**
+    kv = KvRates.from_config(cfg)
 
     # 設定ファイルを別のマシンに持っていったときに気づけるようにする。
     # 実測が取れているのに指定値と 食い違うなら、そう言う。
@@ -410,7 +466,7 @@ def main() -> int:
 
     if not args.pick:
         print(t("budget_line", lang, vram=vram, overhead=overhead) + "\n")
-        cmd_table(lm, vram, overhead, args.ctx, lang)
+        cmd_table(lm, vram, overhead, args.ctx, lang, kv)
         print("\n" + t("note_gib", lang))
         print(t("note_pick", lang))
         return 0
@@ -428,12 +484,12 @@ def main() -> int:
     ctx = args.ctx
     if kv_mode == "auto":
         kv_mode = "f16"
-        if ctx and file_gib(rec) + kv_gib(rec, ctx, "f16") + overhead > vram:
+        if ctx and file_gib(rec) + kv_gib(rec, ctx, "f16", kv) + overhead > vram:
             kv_mode = "q8_0"
             print("# " + t("auto_q8", lang, ctx=ctx), file=sys.stderr)
     if ctx is None:
-        cap = max_ctx(rec, vram, kv_mode, overhead)
-        ctx = recommended_ctx(rec, vram, kv_mode, overhead)
+        cap = max_ctx(rec, vram, kv_mode, overhead, kv)
+        ctx = recommended_ctx(rec, vram, kv_mode, overhead, kv)
         if not ctx:
             sys.exit(t("err_no_fit", lang, name=short(rec), vram=vram,
                        model=file_gib(rec)))
@@ -442,7 +498,7 @@ def main() -> int:
             note += t("auto_ctx_rounded", lang, cap=cap)
         print(note, file=sys.stderr)
 
-    hr = headroom_gib(rec, ctx, kv_mode, vram, overhead)
+    hr = headroom_gib(rec, ctx, kv_mode, vram, overhead, kv)
     if hr < 0:
         print("# " + t("over_budget_stderr", lang, vram=vram, over=-hr), file=sys.stderr)
 
@@ -454,7 +510,7 @@ def main() -> int:
                       mp, int(r_port.value), device, lang,
                       threads=r_threads.value,
                       device_ambiguous=hw.device_index_is_ambiguous(),
-                      n_gpus=len(hw.gpus)))
+                      n_gpus=len(hw.gpus), calibrated=kv))
     return 0
 
 
