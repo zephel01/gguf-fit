@@ -42,7 +42,13 @@ import sys
 from pathlib import Path
 
 from . import _hardware
-from ._config import load_config, render_show_config, render_toml, resolve
+from ._config import (
+    drop_detectable,
+    load_config,
+    render_show_config,
+    render_toml,
+    resolve,
+)
 from ._messages import DEFAULT_LANG, t
 
 GIB = 1024 ** 3
@@ -297,9 +303,16 @@ def main() -> int:
                          "(default: ./gguf-fit.toml)")
     ap.add_argument("--force", action="store_true",
                     help="allow --write-config to overwrite an existing file")
+    ap.add_argument("--refresh", action="store_true",
+                    help="ignore vram/threads/device in the config file and take "
+                         "them from the hardware again")
     args = ap.parse_args()
 
     cfg, cfg_path = load_config(args.config)
+    if args.refresh:
+        # 設定ファイルは実測より強い。一度書いた値は居座るので、
+        # ハードウェアを見て取り直す手段を用意しておく。
+        cfg = drop_detectable(cfg)
     # --llama-server は複数回渡せる。カンマ区切りも受ける。
     cli_bins = None
     if args.llama_server:

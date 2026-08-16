@@ -246,3 +246,34 @@ def test_floats_are_rounded_before_writing(tmp_path):
     p.write_text(text, encoding="utf-8")
     cfg, _ = _config.load_config(p)
     assert cfg["vram"] == 31.84
+
+
+# --- --refresh -------------------------------------------------------------
+
+def test_refresh_drops_only_the_detectable_keys():
+    """設定ファイルは実測より強いので、一度書いた vram は居座る.
+
+    実機で踏んだ: nvidia-smi 由来の 31.84 が config に入っていて、
+    llama.cpp が言う 31.4 に更新されなかった。
+    """
+    cfg = {"lang": "ja", "vram": 31.84, "threads": 16, "device": "CUDA0",
+           "overhead": 1.0, "port": 8085}
+    refreshed = _config.drop_detectable(cfg)
+    assert refreshed == {"lang": "ja", "overhead": 1.0, "port": 8085}
+
+
+def test_refreshed_config_lets_detection_win():
+    cfg = _config.drop_detectable({"vram": 31.84})
+    r = _config.resolve("vram", None, cfg, detected=31.4)
+    assert (r.value, r.source) == (31.4, "detected")
+
+
+def test_without_refresh_the_config_still_wins():
+    r = _config.resolve("vram", None, {"vram": 31.84}, detected=31.4)
+    assert (r.value, r.source) == (31.84, "config")
+
+
+def test_cli_beats_refresh_too():
+    cfg = _config.drop_detectable({"vram": 31.84})
+    r = _config.resolve("vram", 24.0, cfg, detected=31.4)
+    assert (r.value, r.source) == (24.0, "cli")

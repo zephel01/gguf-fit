@@ -59,6 +59,16 @@ KNOWN_KEYS: dict[str, type] = {
 #: 環境変数名は GGUF_FIT_<大文字> で固定
 ENV_PREFIX = "GGUF_FIT_"
 
+#: このマシンを見れば決まる項目。``--refresh`` で設定ファイルの値を捨てて
+#: 取り直す対象。**設定ファイルは実測より強いので、一度書くと居座る。**
+#: ハードウェアを入れ替えたときに更新する手段が要る。
+DETECTABLE_KEYS = ("vram", "threads", "device")
+
+
+def drop_detectable(config: dict) -> dict:
+    """検出で決まる項目を設定から外す (``--refresh`` 用)."""
+    return {k: v for k, v in config.items() if k not in DETECTABLE_KEYS}
+
 
 class Resolved(NamedTuple):
     """解決した値と、**その出どころ**."""
