@@ -227,6 +227,15 @@ MESSAGES: dict[str, dict[str, str]] = {
         "ja": "llama-server のパス。--list-devices に使います。カンマ区切りで"
               "複数のビルドを指定できます (既定: PATH 上の llama-server)",
     },
+    "warn_mixed_backends": {
+        "en": "note: several backends are present ({kinds}). The budget defaults to "
+              "the largest device, {name} ({total:.1f} GiB) -- largest is not "
+              "fastest. Pin --device / --vram if you meant another one.",
+        "ja": "参考: 種類の違うバックエンドが同居しています ({kinds})。予算は"
+              "一番大きい {name} ({total:.1f} GiB) を既定にしました -- "
+              "**一番大きい = 一番速い、ではありません。**別のデバイスで動かす"
+              "なら --device / --vram を明示してください",
+    },
     "hint_no_devices": {
         "en": "no GPU detected. llama.cpp shows only the backends its build was "
               "compiled with, so a CUDA build never lists ROCm or Vulkan devices. "

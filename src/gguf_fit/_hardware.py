@@ -68,8 +68,29 @@ class Hardware(NamedTuple):
     def largest_gpu(self) -> Gpu | None:
         return max(self.gpus, key=lambda g: g.total_gib) if self.gpus else None
 
-    def suggested_vram_gib(self) -> float | None:
-        """``--vram`` の既定として使える値。取れなければ None."""
+    def gpu_by_device_id(self, device_id: str | None) -> Gpu | None:
+        """識別子 ("CUDA0" / "ROCm0") でデバイスを引く."""
+        if not device_id:
+            return None
+        for g in self.gpus:
+            if g.device_id == device_id:
+                return g
+        return None
+
+    def suggested_vram_gib(self, device_id: str | None = None) -> float | None:
+        """``--vram`` の既定として使える値。取れなければ None.
+
+        ``device_id`` を渡すと**そのデバイスの容量**を返す。渡さなければ
+        一番大きいデバイス。
+
+        **起動するデバイスと予算を取るデバイスは一致していないといけない。**
+        実機 (CUDA 5090 / 31.8 GiB と ROCm 8060S / 96 GiB が同居) で、
+        largest が ROCm0 なのに device が CUDA0 という不整合が起こりかけた。
+        96 GiB を前提に計画して 31.8 GiB のカードで起動すれば、当然落ちる。
+        """
+        picked = self.gpu_by_device_id(device_id)
+        if picked is not None:
+            return picked.total_gib
         if self.gpus:
             return self.largest_gpu.total_gib
         if self.unified_memory and self.ram_gib:
@@ -431,7 +452,20 @@ def render(hw: Hardware) -> str:
 VRAM_MISMATCH_TOLERANCE = 0.10
 
 
-def vram_disagrees(given: float | None, hw: Hardware) -> bool:
+def has_mixed_backends(hw: Hardware) -> bool:
+    """種類の違うバックエンドが同居しているか (CUDA と ROCm など).
+
+    **一番大きい = 一番速い、ではない。**実機では 8060S (96 GiB, APU) が
+    5090 (31.8 GiB) より大きいが、生成速度は比べるまでもない。容量だけで
+    自動的に選ぶと遅いほうを勧めることになるので、そうと言う。
+    """
+    kinds = {g.device_id.rstrip("0123456789")
+             for g in hw.gpus if g.device_id}
+    return len(kinds) > 1
+
+
+def vram_disagrees(given: float | None, hw: Hardware,
+                   device_id: str | None = None) -> bool:
     """指定された VRAM が、このマシンの実測と食い違っているか.
 
     設定ファイルを別のマシンに持っていったときに気づけるようにするための照合。
@@ -440,7 +474,7 @@ def vram_disagrees(given: float | None, hw: Hardware) -> bool:
 
     実測が取れないときは何も言わない (判断材料が無いのに騒がない)。
     """
-    detected = hw.suggested_vram_gib()
+    detected = hw.suggested_vram_gib(device_id)
     if given is None or detected is None:
         return False
     return abs(given - detected) > detected * VRAM_MISMATCH_TOLERANCE

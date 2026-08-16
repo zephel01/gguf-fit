@@ -480,3 +480,49 @@ def test_detect_accepts_a_single_string_too(monkeypatch):
     monkeypatch.setattr(hw, "detect_cores", lambda: (16, 32))
     monkeypatch.setattr(hw, "detect_amd_driver_free_gib", lambda: None)
     assert [g.device_id for g in hw.detect("llama-server").gpus] == ["ROCm0"]
+
+
+# --- 予算と起動デバイスの一致 ----------------------------------------------
+
+MIXED = hw.Hardware(
+    gpus=[hw.Gpu(0, "RTX 5090", 31.8, 0.4, device_id="CUDA0", free_gib=31.4),
+          hw.Gpu(1, "RTX 3090", 23.6, 0.6, device_id="CUDA1", free_gib=23.0),
+          hw.Gpu(0, "AMD Radeon 8060S", 96.0, 79.7, device_id="ROCm0",
+                 free_gib=16.3)],
+    ram_gib=31.0, physical_cores=16, logical_cores=32, unified_memory=False)
+
+
+def test_budget_follows_the_chosen_device():
+    """96 GiB を前提に 31.8 GiB のカードで起動したら当然落ちる.
+
+    実機で起こりかけた: largest は ROCm0 (96) なのに device は CUDA0 (31.8)。
+    """
+    assert MIXED.suggested_vram_gib("CUDA0") == 31.8
+    assert MIXED.suggested_vram_gib("CUDA1") == 23.6
+    assert MIXED.suggested_vram_gib("ROCm0") == 96.0
+
+
+def test_without_a_device_the_largest_is_used():
+    assert MIXED.suggested_vram_gib() == 96.0
+    assert MIXED.suggested_device() == "ROCm0"
+
+
+def test_unknown_device_id_falls_back_to_largest():
+    assert MIXED.suggested_vram_gib("Vulkan9") == 96.0
+
+
+def test_mixed_backends_are_reported():
+    """一番大きい 8060S は、5090 より遅い。容量だけで選ばせない."""
+    assert hw.has_mixed_backends(MIXED) is True
+
+
+def test_same_backend_is_not_reported_as_mixed():
+    cuda_only = MIXED._replace(gpus=MIXED.gpus[:2])
+    assert hw.has_mixed_backends(cuda_only) is False
+
+
+def test_vram_check_uses_the_chosen_device():
+    """CUDA0 (31.8) を選んでいるなら、96 との比較で騒がない."""
+    assert hw.vram_disagrees(31.8, MIXED, "CUDA0") is False
+    assert hw.vram_disagrees(96.0, MIXED, "CUDA0") is True
+    assert hw.vram_disagrees(96.0, MIXED, "ROCm0") is False

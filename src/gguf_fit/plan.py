@@ -312,11 +312,15 @@ def main() -> int:
         r_llama = single._replace(value=[single.value])
     hw = _hardware.detect(r_llama.value)
     r_lang = resolve("lang", args.lang, cfg, DEFAULT_LANG)
-    r_vram = resolve("vram", args.vram, cfg, detected=hw.suggested_vram_gib())
-    r_overhead = resolve("overhead", args.overhead, cfg, DEFAULT_OVERHEAD_GIB)
-    r_port = resolve("port", args.port, cfg, 8085)
+    # **device を先に決める。**予算はそのデバイスの容量から取る。
+    # 別々に決めると「96 GiB を前提に 31.8 GiB のカードで起動」が起こる。
     r_device = resolve("device", args.device, cfg,
                        detected=hw.suggested_device())
+    picked_device = str(r_device.value) if r_device.value else None
+    r_vram = resolve("vram", args.vram, cfg,
+                     detected=hw.suggested_vram_gib(picked_device))
+    r_overhead = resolve("overhead", args.overhead, cfg, DEFAULT_OVERHEAD_GIB)
+    r_port = resolve("port", args.port, cfg, 8085)
     r_threads = resolve("threads", args.threads, cfg,
                         detected=hw.suggested_threads())
     r_model_path = resolve("model_path", args.model_path, cfg)
@@ -371,7 +375,15 @@ def main() -> int:
                        total=tight.total_gib, free=tight.free_gib),
               file=sys.stderr)
 
-    if r_vram.source != "detected" and _hardware.vram_disagrees(vram, hw):
+    if _hardware.has_mixed_backends(hw) and r_device.source == "detected":
+        big = hw.largest_gpu
+        kinds = ", ".join(sorted({g.device_id.rstrip("0123456789")
+                                  for g in hw.gpus if g.device_id}))
+        print("# " + t("warn_mixed_backends", lang, kinds=kinds,
+                       name=big.name, total=big.total_gib), file=sys.stderr)
+
+    if r_vram.source != "detected" and _hardware.vram_disagrees(
+            vram, hw, picked_device):
         print("# " + t("warn_vram_mismatch", lang, given=vram,
                        source=r_vram.source, detected=hw.suggested_vram_gib()),
               file=sys.stderr)
