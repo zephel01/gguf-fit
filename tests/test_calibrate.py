@@ -20,12 +20,19 @@ from gguf_fit import calibrate as cal
 F16 = [cal.Point("f16", 32768, 21712), cal.Point("f16", 65536, 23922)]
 Q8 = [cal.Point("q8_0", 32768, 20838), cal.Point("q8_0", 65536, 22216)]
 
-#: 同じ4点を、リクエストを1回通してから測り直したもの。
+#: 8トークンのリクエストを1回通してから測り直したもの。
 #: **4点とも +100 MiB ちょうど**動いた (ctx にも KV の型にも依らない定数)。
-F16_WARM = [cal.Point("f16", 32768, 21812, 21712),
-            cal.Point("f16", 65536, 24022, 23922)]
-Q8_WARM = [cal.Point("q8_0", 32768, 20938, 20838),
-           cal.Point("q8_0", 65536, 22316, 22216)]
+F16_WARM8 = [cal.Point("f16", 32768, 21812, 21712),
+             cal.Point("f16", 65536, 24022, 23922)]
+Q8_WARM8 = [cal.Point("q8_0", 32768, 20938, 20838),
+            cal.Point("q8_0", 65536, 22316, 22216)]
+
+#: 既定の 2048 トークン (バッチ1つ分) で測り直したもの。+110 MiB。
+#: プロンプトを 256倍にして 10 MiB しか動かない = ほぼ頭打ち。
+F16_WARM = [cal.Point("f16", 32768, 21822, 21712),
+            cal.Point("f16", 65536, 24032, 23922)]
+Q8_WARM = [cal.Point("q8_0", 32768, 20948, 20838),
+           cal.Point("q8_0", 65536, 22326, 22216)]
 
 #: 本番のベンチマークを回している最中に読んだ値 (絶対値から待機分 4 MiB を引いた)。
 #: ロード直後より 142 MiB 高い。f16 でも q8_0 でも同じ 142。
@@ -125,8 +132,8 @@ def test_noise_shows_up_as_error_not_as_a_silent_fit():
 # --- ロード直後と推論後の差 ------------------------------------------------
 
 def test_warmup_delta_is_reported_per_point():
-    assert F16_WARM[1].warmup_mib == 100
-    assert Q8_WARM[1].warmup_mib == 100
+    assert F16_WARM[1].warmup_mib == 110
+    assert Q8_WARM[1].warmup_mib == 110
 
 
 def test_warmup_delta_is_none_when_it_was_not_measured():
@@ -136,7 +143,7 @@ def test_warmup_delta_is_none_when_it_was_not_measured():
 
 def test_result_says_how_much_one_request_added():
     out = cal.render_fits([cal.fit_points(F16_WARM)], F16_WARM + Q8_WARM)
-    assert "100 MiB" in out
+    assert "110 MiB" in out
     assert "one request" in out
 
 
@@ -332,7 +339,7 @@ def test_warming_up_moves_the_intercept_and_not_the_slope():
     cold, warm = cal.fit_points(F16), cal.fit_points(F16_WARM)
     assert warm.bytes_per_token == cold.bytes_per_token
     assert warm.intercept_gib - cold.intercept_gib == pytest.approx(
-        100 / 1024, abs=1e-6)
+        110 / 1024, abs=1e-6)
     assert warm.max_error_mib == pytest.approx(0, abs=0.5)
 
 
@@ -346,23 +353,33 @@ def test_the_ratio_survives_warming_up():
 
 
 def test_the_warmed_intercept_is_the_one_to_plan_with():
-    """切片 19.14 - ファイル 18.47 = オーバーヘッド 0.67 GiB。既定 1.0 の根拠."""
+    """切片 19.15 - ファイル 18.47 = オーバーヘッド 0.68 GiB。既定 1.0 の根拠."""
     over = cal.fit_points(F16_WARM).intercept_gib - 18.47
-    assert over == pytest.approx(0.67, abs=0.01)
+    assert over == pytest.approx(0.68, abs=0.01)
     assert over < 1.0                      # 既定は安全側
 
 
-def test_a_short_request_does_not_reach_what_a_real_run_allocates():
-    """**足りない分を黙って埋めない。**8トークンでは +100、本番は +142.
+def test_prompt_length_barely_moves_the_figure():
+    """**8 → 2048 トークン (256倍) で +10 MiB。**ここを伸ばしても意味がない.
 
-    差の 42 MiB は再現できていない。だからプロンプトでバッチを埋めにいく。
+    確保は「推論を1回でも通したか」でほぼ決まり、プロンプト長では決まらない。
+    測る前は「バッチを埋めれば本番に届く」と考えていたが、届かなかった。
     """
-    short = F16_WARM[1].warmup_mib
-    real = F16_RUNNING_64K - F16[1].used_mib
-    assert short < real
-    assert real - short == 42
-    # q8_0 でもまったく同じ差
-    assert (Q8_RUNNING_64K - Q8[1].used_mib) - Q8_WARM[1].warmup_mib == 42
+    for warm8, warm in ((F16_WARM8, F16_WARM), (Q8_WARM8, Q8_WARM)):
+        assert warm[1].warmup_mib - warm8[1].warmup_mib == 10
+
+
+def test_one_request_does_not_reach_what_a_real_run_allocates():
+    """**足りない分を黙って埋めない。**1回では +110、本番は +142.
+
+    残る 32 MiB は再現できていない。既定の overhead 1.0 GiB が実測 0.68 に
+    対して余裕を持っているのはこのため。
+    """
+    for warm, running, cold in ((F16_WARM, F16_RUNNING_64K, F16),
+                                (Q8_WARM, Q8_RUNNING_64K, Q8)):
+        real = running - cold[1].used_mib
+        assert warm[1].warmup_mib < real
+        assert real - warm[1].warmup_mib == 32
 
 
 # --- ウォームアップの本文 --------------------------------------------------
