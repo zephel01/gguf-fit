@@ -4,10 +4,12 @@
 ``--ctx-size`` の上限・KVキャッシュの VRAM・``--spec-type draft-mtp`` の
 可否を確定させる。mmap で開くだけなので 27B のファイルでも1秒。
 
-コマンドは2本:
+コマンドは4本:
 
+    gguf-fetch   Hugging Face から**載るものだけ**を落とす (ヘッダは Range で先読み)
     gguf-probe   ファイルに何が書いてあるかを読む
     gguf-plan    読んだ結果と VRAM 予算から起動コマンドと config を出す
+    gguf-calibrate  このマシンを1回測って、見積りを推測でなくす
 
 ライブラリとしても使える。中核はどちらも純粋関数で、GGUF ファイルも
 ``gguf`` パッケージも要らない。
@@ -26,6 +28,11 @@
     recommended_ctx(rec, vram_gib=24.0, kv_mode="q8_0", overhead=1.0)
 """
 
+from ._ggufhdr import parse_header as parse_gguf_header
+
+# ``fetch`` も ``probe`` と同じで、**モジュール名を関数で潰さないこと**。
+# 使いたいのは中の純粋関数のほうなので、そちらだけ名前を出す。
+from .fetch import group_files, quant_label
 from .plan import (
     Q8_FACTOR,
     file_gib,
@@ -49,10 +56,13 @@ __all__ = [
     "Q8_FACTOR",
     "__version__",
     "file_gib",
+    "group_files",
     "headroom_gib",
     "kv_gib",
     "max_ctx",
     "max_tokens_for",
+    "parse_gguf_header",
+    "quant_label",
     "read_gguf",
     "recommended_ctx",
     "render",

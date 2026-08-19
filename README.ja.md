@@ -49,6 +49,7 @@ pip install git+https://github.com/zephel01/gguf-fit
 ## まず動かす
 
 ```bash
+gguf-fetch ornith-ai/Ornith-1.5-35B-A3B-GGUF --fit   # 載るものだけ落とす
 gguf-probe --json --out gguf.json /models/Qwen3.8-27B-GGUF/*.gguf
 gguf-plan gguf.json --pick Q5_K_M --lang ja
 ```
@@ -79,10 +80,11 @@ llama-server -m /models/Qwen3.8-27B-GGUF/Qwen3.8-27B-Q5_K_M.gguf \
 
 ## なぜ
 
-コマンドは3本。**「読む」「決める」「測る」**で切ってあります。
+コマンドは4本。**「落とす」「読む」「決める」「測る」**で切ってあります。
 
 | | |
 | :-- | :-- |
+| **`gguf-fetch`** | Hugging Face から**落とす**。ただし**落とす前に載るかを決める** |
 | **`gguf-probe`** | GGUF を**読む**。何が書いてあるかを出す |
 | **`gguf-plan`** | 読んだ結果と VRAM 予算から、**起動コマンドと config を出す** |
 | **`gguf-calibrate`** | このマシンを1回**測る**。予算計算を推測でなくす |
@@ -237,6 +239,70 @@ Qwen3.8-27B-Q5_K_M / RTX 5090 / `-fa on` / `--spec-type draft-mtp` で:
 ## 使い方
 
 <details open>
+<summary><b>gguf-fetch</b> — 落とす。ただし決めてから</summary>
+
+```bash
+gguf-fetch ornith-ai/Ornith-1.5-35B-A3B-GGUF                  # 判定だけ
+gguf-fetch ornith-ai/Ornith-1.5-35B-A3B-GGUF --fit            # 載るものを上から
+gguf-fetch ornith-ai/Ornith-1.5-35B-A3B-GGUF --pick Q5_K_M    # 指定した1本だけ
+gguf-fetch ornith-ai/Ornith-1.5-35B-A3B-GGUF --all            # リポジトリの GGUF 全部
+```
+
+`hf download` は落とすこと自体には何の不足もありません。足りないのは
+**「このリポジトリの5本のうち、自分の 24 GiB に載るのはどれか」**という判断で、
+それは普通、**全部落としてから** `gguf-probe` で調べることになります。
+21 GB を5本落として4本消す、がいちばんありがちな失敗です。
+
+順番を入れ替えます。ファイル一覧は数 KB。GGUF はヘッダが**ファイルの先頭に
+固まっている**ので、HTTP の `Range` で数 MB 取れば層構造も native ctx も
+MTP の有無も読めます。あとは `gguf-plan` と同じ式に通すだけです。
+
+```console
+$ gguf-fetch ornith-ai/Ornith-1.5-35B-A3B-GGUF --vram 24 --fit --lang ja
+ornith-ai/Ornith-1.5-35B-A3B-GGUF  (main)
+予算 24.0 GiB / オーバーヘッド 1.0 GiB / KV auto / ctx 16,384 以上で「載る」
+
+量子化   ファイル    最大ctx(f16)    最大ctx(q8_0)   判定
+---------------------------------------------------------
+Q4_K_M     20.22G         131,072          249,856   → 落とす
+Q5_K_M     23.61G        入らない         入らない   入らない
+Q6_K       27.20G        入らない         入らない   入らない
+Q8_0       35.21G        入らない         入らない   入らない
+BF16       66.19G        入らない         入らない   入らない
+
+# KV の数字は Q4_K_M のヘッダから読みました (12.0 MB 転送)。同じモデルの量子化違いは
+# 層構造が同じなので、KV/token は全行にそのまま当てはまります。
+# ビジョン投影が 1 本あります。mmproj-Ornith-1.5-35B-BF16.gguf (0.84 GiB) を付けます。
+```
+
+**候補 172 GB ぶんの判定に、転送は 12 MB。**
+
+* **なぜ代表1本で足りるのか。** 量子化が変えるのはテンソルの**型**であって
+  **名前**ではありません。だから同じリポジトリの量子化違いは層構造が同じで、
+  KV/token も native ctx も MTP の有無も一致し、**動くのはファイルサイズだけ**です。
+  出力には**どのファイルから読んだ数字か**を必ず書きます。仮定を置きたくなければ
+  `--probe all` で全部のヘッダを読めます（本数ぶん転送が増えます）。
+  `--probe none` はヘッダを読まず、**ファイルサイズだけ**の粗い判定になります
+  （そうと分かるように書きます）。
+* **`--fit` が選ぶもの。** 載るもののうち大きいほうから、既定で `--top 3` 本。
+  1本に絞らないのは、**予算の境界付近では見積りはあくまで見積り**だからです。
+  1段下をディスクに置いておく価値は、そのディスク代より大きい。
+  `--min-ctx`（既定 16,384）に届かないものは「載る」と数えません。
+  起動はするが ctx 4k しか取れない、は答えになっていないからです。
+* **`mmproj`。** ビジョン投影は自動で付けます（複数あれば最小の1本）。
+  `--mmproj all` / `--mmproj none` で変えられます。
+* **分割 GGUF。** `-00001-of-00003` は1つの候補にまとめ、サイズを合計します。
+  別々に数えると「小さいモデルが3本あって全部載る」ように見えます。
+* **書き込む前に**ディスクの空きを確かめ、実行する `hf download` をそのまま出して、
+  聞きます。`--dry-run` は出すだけ、`-y` で確認を飛ばします。
+
+落とすのは `hf download` の仕事なので、ファイル名の一覧を渡したら手を引きます。
+設定ファイルに `models_dir` を書いておけば `--dir` は要りません。`HF_ENDPOINT` と
+`HF_TOKEN` を見るので、ミラーでも gated リポジトリでも動きます。
+
+</details>
+
+<details open>
 <summary><b>gguf-probe</b> — 読む</summary>
 
 ```bash
@@ -374,6 +440,9 @@ recommended_ctx(rec, vram_gib=24.0, kv_mode="q8_0", overhead=1.0)
 `入らない` と出たものは候補から消えるので、**回す本数がそのまま減ります**。
 12本を1本30分で回すと6時間、5本に絞れば2.5時間です。
 
+**まだ落としていないなら、落とす前に絞れます。** `gguf-fetch <repo>` はヘッダだけを
+HTTP で読んで同じ表を出すので、200 GB を落としてから4本消す、をしなくて済みます。
+
 </details>
 
 <details>
@@ -458,6 +527,9 @@ overhead = 1.0
 device   = "CUDA0"
 port     = 8085
 
+# gguf-fetch の落とし先。この下にリポジトリ名のサブディレクトリを作ります。
+models_dir = "/mnt/data/models"
+
 # gguf-calibrate の結果。あれば GGUF からの計算値より優先されます。
 kv_f16_bytes = 70720
 kv_q8_bytes  = 44096
@@ -494,12 +566,15 @@ settings in effect (cli > env > config file > default)
 - **実際の品質。** 「Q5_K が 71.7%」は事実ですが、それが何点になるかは回さないと分かりません。
   **探索の前に候補を削る**道具であって、測定の代わりではありません
 - **複数GPUへの分割。** `--vram` は1デバイスぶんの予算です。`nvidia-smi` で確かめてください
+- **1つのリポジトリに別のモデルが同居している場合。** `gguf-fetch` の既定
+  (`--probe one`) は代表1本のヘッダを全行に当てます。**同じモデルの量子化違い**なら
+  正しいですが、無関係なモデルが混ざっていれば外れます。`--probe all` で全部読めます
 
 ## 開発
 
 ```bash
 uv sync            # .venv と開発ツール
-uv run pytest -q   # 47件。GGUF ファイルは不要
+uv run pytest -q   # 265件。GGUF ファイルもネットワークも不要
 uv run ruff check .
 ```
 

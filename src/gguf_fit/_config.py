@@ -57,6 +57,9 @@ KNOWN_KEYS: dict[str, type] = {
     "kv_f16_bytes": float,
     "kv_q8_bytes": float,
     "model_path": str,
+    # gguf-fetch: 落とし先と、使う hf コマンド
+    "models_dir": str,
+    "hf_bin": str,
 }
 
 #: 環境変数名は GGUF_FIT_<大文字> で固定

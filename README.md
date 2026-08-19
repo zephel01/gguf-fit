@@ -47,6 +47,7 @@ pip install git+https://github.com/zephel01/gguf-fit
 ## Quick start
 
 ```bash
+gguf-fetch ornith-ai/Ornith-1.5-35B-A3B-GGUF --fit   # download only what fits
 gguf-probe --json --out gguf.json /models/Qwen3.8-27B-GGUF/*.gguf
 gguf-plan gguf.json --pick Q5_K_M
 ```
@@ -92,10 +93,11 @@ Output is English by default; `--lang ja` switches it to Japanese.
 
 ## Why
 
-Three commands, split along real seams:
+Four commands, split along real seams:
 
 | | |
 | :-- | :-- |
+| **`gguf-fetch`** | Downloads from Hugging Face — but decides **which files fit before downloading them**. |
 | **`gguf-probe`** | Reads the file. Reports what is actually in it. |
 | **`gguf-plan`** | Takes that plus a VRAM budget → a launch command and a config. |
 | **`gguf-calibrate`** | Measures this machine once, so the budget arithmetic is not a guess. |
@@ -224,6 +226,68 @@ That is why the default `overhead` leaves room instead of sitting exactly on the
 </details>
 
 ## Usage
+
+<details open>
+<summary><b>gguf-fetch</b> — download, but decide first</summary>
+
+```bash
+gguf-fetch ornith-ai/Ornith-1.5-35B-A3B-GGUF                  # just the verdict
+gguf-fetch ornith-ai/Ornith-1.5-35B-A3B-GGUF --fit            # the ones that fit
+gguf-fetch ornith-ai/Ornith-1.5-35B-A3B-GGUF --pick Q5_K_M    # exactly this one
+gguf-fetch ornith-ai/Ornith-1.5-35B-A3B-GGUF --all            # every GGUF in the repo
+```
+
+`hf download` is already fine at downloading. What it cannot tell you is **which of the
+five quantizations in that repo fits your 24 GiB card** — normally you find that out by
+downloading them all and running `gguf-probe` afterwards.
+
+This reverses the order. The repo listing costs a few KB. The GGUF header lives at the
+*front* of the file, so an HTTP `Range` request gets the layer structure, the native ctx,
+and the MTP tensor count for a few MB. Then the same arithmetic `gguf-plan` uses decides
+what to download.
+
+```console
+$ gguf-fetch ornith-ai/Ornith-1.5-35B-A3B-GGUF --vram 24 --fit
+ornith-ai/Ornith-1.5-35B-A3B-GGUF  (main)
+budget 24.0 GiB / overhead 1.0 GiB / KV auto / counts as fitting from ctx 16,384
+
+quantization       file   max ctx (f16)   max ctx (q8_0)   verdict
+------------------------------------------------------------------
+Q4_K_M           20.22G         131,072          249,856   -> DOWNLOAD
+Q5_K_M           23.61G              no               no   no
+Q6_K             27.20G              no               no   no
+Q8_0             35.21G              no               no   no
+BF16             66.19G              no               no   no
+
+# the KV figures come from the header of Q4_K_M (12.0 MB transferred). Quantizations of
+# the same model share the layer structure, so the same KV/token applies to every row.
+# 1 vision projector(s) found; taking mmproj-Ornith-1.5-35B-BF16.gguf (0.84 GiB).
+```
+
+**172 GB of candidates, judged with 12 MB of transfer.**
+
+* **Why one header is enough.** Quantizing changes tensor *types*, not tensor *names*. So
+  every quantization in a repo has the same layer structure — the same KV bytes per token,
+  the same native ctx, the same MTP tensors. Only the file size moves. The output always
+  names the file the figure came from. `--probe all` reads every header instead (more
+  transfer); `--probe none` reads none and judges on file size alone, and says so.
+* **What `--fit` picks.** The largest quantizations that fit, `--top 3` of them by default.
+  Not one: near the budget line the estimate is an estimate, and having the next one down
+  on disk is worth more than the disk it costs. A quantization only counts as fitting if it
+  reaches `--min-ctx` (default 16,384) — something that loads but only reaches ctx 4k is
+  not a usable answer.
+* **`mmproj`.** Vision projectors are picked up automatically (the smallest one, if a repo
+  ships several). `--mmproj all` / `--mmproj none`.
+* **Sharded GGUFs.** `-00001-of-00003` files are grouped into one candidate and their sizes
+  summed. Counted separately they would look like three small models that all fit.
+* **Before it writes anything** it checks free disk space, prints the exact `hf download`
+  command, and asks. `--dry-run` prints and stops; `-y` skips the question.
+
+Downloading is `hf download`'s job — this hands it a file list and gets out of the way.
+Set `models_dir` in the config file to stop typing `--dir`. `HF_ENDPOINT` and `HF_TOKEN`
+are honoured, so mirrors and gated repos work.
+
+</details>
 
 <details open>
 <summary><b>gguf-probe</b> — read</summary>
@@ -415,6 +479,9 @@ overhead = 1.0
 device   = "CUDA0"
 port     = 8085
 
+# where gguf-fetch puts downloads (a per-repo subdirectory is created under it)
+models_dir = "/mnt/data/models"
+
 # from gguf-calibrate. Present → used instead of the GGUF arithmetic.
 kv_f16_bytes = 70720
 kv_q8_bytes  = 44096
@@ -450,12 +517,15 @@ wrote down should not be silently overridden by the machine.
 - **Actual quality.** "71.7% of weights are Q5_K" is a fact; what it scores is not. This tool
   narrows the candidates *before* you spend GPU time — it does not replace measuring.
 - **Multi-GPU splits.** `--vram` is one device's budget. Check against `nvidia-smi`.
+- **A repo holding more than one model.** `gguf-fetch --probe one` (the default) applies one
+  header to every row. That is correct for quantizations *of the same model*; it is wrong if
+  an unrelated model shares the repo. `--probe all` reads them all.
 
 ## Development
 
 ```bash
 uv sync            # .venv + dev tools
-uv run pytest -q   # 47 tests, no GGUF file required
+uv run pytest -q   # 265 tests, no GGUF file and no network required
 uv run ruff check .
 ```
 

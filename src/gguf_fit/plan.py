@@ -62,7 +62,7 @@ from ._config import (
     render_toml,
     resolve,
 )
-from ._messages import DEFAULT_LANG, t
+from ._messages import DEFAULT_LANG, pad, t, width
 
 GIB = 1024 ** 3
 #: 量子化KVキャッシュのサイズ比 (8bit + スケール)。gguf_probe と同じ値
@@ -235,18 +235,22 @@ def cmd_table(recs, vram, overhead, ctx_req, lang=DEFAULT_LANG, calibrated=None)
                 fit = t("fits_no", lang, used=need_q8)
         rows.append((short(r), file_gib(r), f16, q8, fit))
 
-    w = max(len(x[0]) for x in rows) + 2
-    head = (f"{t('col_quant', lang):<{w}}{t('col_filesize', lang):>9}"
-            f"{t('col_maxctx_f16', lang):>16}{t('col_maxctx_q8', lang):>17}")
+    # 日本語の見出しと「入らない」は1文字で2桁を占める。**文字数で詰めると
+    # 必ず崩れる**ので、表示幅で揃える (_messages.pad)
+    w = max([*(width(x[0]) for x in rows), width(t("col_quant", lang))]) + 2
+    head = (pad(t("col_quant", lang), w) + pad(t("col_filesize", lang), 9, True)
+            + pad(t("col_maxctx_f16", lang), 16, True)
+            + pad(t("col_maxctx_q8", lang), 17, True))
     if ctx_req:
         head += "   " + t("col_fits", lang, ctx=ctx_req)
     print(head)
-    print("-" * len(head))
+    print("-" * width(head))
     none = t("no_fit_short", lang)
     for name, fg, f16, q8, fit in rows:
         f16s = f"{f16:,}" if f16 else none
         q8s = f"{q8:,}" if q8 else none
-        line = f"{name:<{w}}{fg:>8.2f}G{f16s:>16}{q8s:>17}"
+        line = (pad(name, w) + f"{fg:>8.2f}G"
+                + pad(f16s, 16, True) + pad(q8s, 17, True))
         if ctx_req:
             line += f"   {fit}"
         print(line)

@@ -89,3 +89,14 @@ lang = "ja"
 
 # -m に書くパス。通常は gguf-probe が記録した絶対パスが使われるので不要です。
 # model_path = "/mnt/data/models/Qwen3.8-27B-GGUF/Qwen3.8-27B-Q5_K_M.gguf"
+
+
+# ---- gguf-fetch (Hugging Face から落とす) --------------------------------
+
+# 落とし先の親ディレクトリ。この下に**リポジトリ名のサブディレクトリ**を作って
+# 置きます (例: /mnt/data/models/Ornith-1.5-35B-A3B-GGUF)。既定はカレント。
+# models_dir = "/mnt/data/models"
+
+# 使う hf コマンド。書かなければ PATH から hf を探し、無ければ
+# huggingface-cli を探します (古い huggingface_hub はこちらの名前)。
+# hf_bin = "/home/you/.local/bin/hf"

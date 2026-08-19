@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import os
+import unicodedata
 
 LANGS = ("en", "ja")
 DEFAULT_LANG = "en"
@@ -484,7 +485,210 @@ MESSAGES: dict[str, dict[str, str]] = {
         "en": "path to write in the launch command",
         "ja": "起動コマンドに書くパス",
     },
+
+    # ---- fetch: CLI のヘルプ ----
+    "desc_fetch": {
+        "en": "download GGUF files from Hugging Face, after deciding which ones fit",
+        "ja": "Hugging Face から GGUF を落とす。落とす前に、どれが載るかを決める",
+    },
+    "help_repo": {
+        "en": "Hugging Face repo id, for example ornith-ai/Ornith-1.5-35B-A3B-GGUF",
+        "ja": "Hugging Face のリポジトリ id。例 ornith-ai/Ornith-1.5-35B-A3B-GGUF",
+    },
+    "help_fit": {
+        "en": "download the largest quantizations that fit the VRAM budget",
+        "ja": "VRAM 予算に収まるもののうち、大きいほうから落とす",
+    },
+    "help_fetch_pick": {
+        "en": "download this quantization only (for example Q5_K_M)",
+        "ja": "この量子化だけを落とす (例 Q5_K_M)",
+    },
+    "help_all": {
+        "en": "download every GGUF in the repo",
+        "ja": "リポジトリの GGUF を全部落とす",
+    },
+    "help_top": {
+        "en": "how many quantizations --fit downloads",
+        "ja": "--fit が落とす本数",
+    },
+    "help_min_ctx": {
+        "en": "a quantization counts as fitting only if it reaches this ctx",
+        "ja": "この ctx に届いて初めて「載る」と数える",
+    },
+    "help_dir": {
+        "en": "where to put the files (a subdirectory named after the repo is created)",
+        "ja": "置き場所 (リポジトリ名のサブディレクトリを作る)",
+    },
+    "help_revision": {
+        "en": "branch, tag or commit (default main)",
+        "ja": "ブランチ・タグ・コミット (既定 main)",
+    },
+    "help_mmproj": {
+        "en": "vision projector: auto = the smallest one, all, or none",
+        "ja": "ビジョン投影: auto = 最小の1本 / all = 全部 / none = 付けない",
+    },
+    "help_probe_mode": {
+        "en": "how many GGUF headers to read over HTTP: one (default), all, or none",
+        "ja": "GGUF ヘッダを何本 HTTP で読むか: one (既定) / all / none",
+    },
+    "help_yes": {
+        "en": "do not ask before downloading",
+        "ja": "確認せずに落とす",
+    },
+    "help_dry_run": {
+        "en": "print the hf download command and stop",
+        "ja": "hf download のコマンドを出すだけで落とさない",
+    },
+    "help_fetch_json": {
+        "en": "print the candidates and the verdict as JSON",
+        "ja": "候補と判定を JSON で出す",
+    },
+    "help_hf_bin": {
+        "en": "the hf executable to use (default: hf, then huggingface-cli)",
+        "ja": "使う hf コマンド (既定: hf、無ければ huggingface-cli)",
+    },
+
+    # ---- fetch: 表と判定 ----
+    "fetch_col_verdict": {
+        "en": "verdict",
+        "ja": "判定",
+    },
+    "fetch_mark_yes": {
+        "en": "fits",
+        "ja": "載る",
+    },
+    "fetch_mark_no": {
+        "en": "no",
+        "ja": "入らない",
+    },
+    "fetch_mark_maybe": {
+        "en": "maybe (size only)",
+        "ja": "たぶん (サイズだけ)",
+    },
+    "fetch_mark_take": {
+        "en": "-> DOWNLOAD",
+        "ja": "→ 落とす",
+    },
+    "fetch_unknown": {
+        "en": "?",
+        "ja": "?",
+    },
+    "fetch_header_line": {
+        "en": "{repo}  ({rev})",
+        "ja": "{repo}  ({rev})",
+    },
+    "fetch_budget": {
+        "en": "budget {vram:.1f} GiB / overhead {overhead:.1f} GiB / KV {kv} "
+              "/ counts as fitting from ctx {min_ctx:,}",
+        "ja": "予算 {vram:.1f} GiB / オーバーヘッド {overhead:.1f} GiB / KV {kv} "
+              "/ ctx {min_ctx:,} 以上で「載る」",
+    },
+    "fetch_kv_source": {
+        "en": "# the KV figures come from the header of {files} ({mb:.1f} MB "
+              "transferred). Quantizations of the same model share the layer "
+              "structure, so the same KV/token applies to every row.",
+        "ja": "# KV の数字は {files} のヘッダから読みました ({mb:.1f} MB 転送)。"
+              "同じモデルの量子化違いは層構造が同じなので、KV/token は全行に"
+              "そのまま当てはまります。",
+    },
+    "fetch_kv_source_all": {
+        "en": "# read the header of every candidate: {files} ({mb:.1f} MB transferred)",
+        "ja": "# 候補すべてのヘッダを読みました: {files} ({mb:.1f} MB 転送)",
+    },
+    "fetch_size_only": {
+        "en": "# no header was read (--probe none), so this is file size against the "
+              "budget only. The KV cache is not counted.",
+        "ja": "# ヘッダを読んでいません (--probe none)。ファイルサイズと予算を"
+              "比べただけで、**KVキャッシュのぶんは入っていません**。",
+    },
+    "fetch_mmproj_found": {
+        "en": "# {n} vision projector(s) found; taking {name} ({gib:.2f} GiB). "
+              "--mmproj all / none changes this.",
+        "ja": "# ビジョン投影が {n} 本あります。{name} ({gib:.2f} GiB) を付けます。"
+              "--mmproj all / none で変えられます。",
+    },
+    "fetch_next": {
+        "en": "nothing downloaded. Pick a mode:\n"
+              "  gguf-fetch {repo} --fit          # the ones that fit\n"
+              "  gguf-fetch {repo} --pick Q5_K_M  # just this one\n"
+              "  gguf-fetch {repo} --all          # everything",
+        "ja": "まだ何も落としていません。モードを選んでください:\n"
+              "  gguf-fetch {repo} --fit          # 載るものを上から\n"
+              "  gguf-fetch {repo} --pick Q5_K_M  # 指定した1本だけ\n"
+              "  gguf-fetch {repo} --all          # 全部",
+    },
+    "fetch_nothing_fits": {
+        "en": "nothing fits in {vram:.1f} GiB. Lower --min-ctx, pass --kv q8_0, "
+              "or name one with --pick and run it on the CPU.",
+        "ja": "{vram:.1f} GiB に載るものがありません。--min-ctx を下げるか、"
+              "--kv q8_0 を指定するか、--pick で名指しして CPU で回してください。",
+    },
+    "fetch_plan": {
+        "en": "downloading {n} file(s), {gib:.2f} GiB total:",
+        "ja": "落とすもの: {n} ファイル / 合計 {gib:.2f} GiB",
+    },
+    "fetch_disk_ok": {
+        "en": "# disk free: {free:.1f} GiB",
+        "ja": "# ディスクの空き: {free:.1f} GiB",
+    },
+    "fetch_disk_short": {
+        "en": "!! disk free is {free:.1f} GiB but {need:.2f} GiB is needed. Stopping "
+              "here rather than filling the disk.",
+        "ja": "!! ディスクの空きが {free:.1f} GiB しかありません ({need:.2f} GiB 必要)。"
+              "埋め切る前に止めます。",
+    },
+    "fetch_confirm": {
+        "en": "download? [y/N] ",
+        "ja": "落としますか? [y/N] ",
+    },
+    "fetch_cancelled": {
+        "en": "cancelled.",
+        "ja": "やめました。",
+    },
+    "fetch_done": {
+        "en": "done -> {dir}\nThese figures are still estimates. Measure them:",
+        "ja": "完了 -> {dir}\nここまでの数字はまだ見積りです。測ってください:",
+    },
+    "fetch_no_hf": {
+        "en": "hf was not found. Install it with `pip install -U huggingface_hub`, "
+              "or run the command above yourself.",
+        "ja": "hf が見つかりません。`pip install -U huggingface_hub` で入れるか、"
+              "上のコマンドを自分で実行してください。",
+    },
+    "fetch_repo_failed": {
+        "en": "could not read {repo}: {err}",
+        "ja": "{repo} を読めませんでした: {err}",
+    },
+    "fetch_no_gguf": {
+        "en": "{repo} has no .gguf files",
+        "ja": "{repo} に .gguf がありません",
+    },
+    "fetch_pick_none": {
+        "en": "--pick {pick} matched nothing. Available: {names}",
+        "ja": "--pick {pick} に当たるものがありません。あるのは: {names}",
+    },
+    "fetch_header_failed": {
+        "en": "could not read the header of {file}: {err}",
+        "ja": "{file} のヘッダを読めませんでした: {err}",
+    },
 }
+
+
+def width(text: str) -> int:
+    """端末で何桁を占めるか。**日本語は1文字で2桁**.
+
+    ``str.ljust`` も f-string の ``{:<10}`` も**文字数**で詰める。「入らない」は
+    4文字だが端末では8桁あるので、日本語の列がある表は必ず崩れる。
+    Unicode の East Asian Width が W (Wide) か F (Fullwidth) のものを2桁と数える。
+    """
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+               for ch in text)
+
+
+def pad(text: str, columns: int, right: bool = False) -> str:
+    """表示幅で桁を揃える。``right=True`` で右寄せ."""
+    fill = " " * max(0, columns - width(text))
+    return fill + text if right else text + fill
 
 
 def resolve_lang(explicit: str | None = None) -> str:
