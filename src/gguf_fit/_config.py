@@ -164,6 +164,32 @@ def resolve(key: str, cli_value: Any, config: dict, default: Any = None,
     return Resolved(default, "default")
 
 
+def resolve_llama_servers(cli_values: list[str] | None, config: dict) -> Resolved:
+    """``llama-server`` の実体を決める。複数のビルドを並べられる.
+
+    **単数形 ``llama_server`` と複数形 ``llama_servers`` の両方を受ける。**
+    1本しか使っていない人に配列を書かせる理由が無く、複数ビルドを使い分けて
+    いる人に1本しか書かせないわけにもいかないため。
+
+    ここを ``gguf-plan`` と ``gguf-fetch`` で**共有している**のは、片方だけが
+    ROCm ビルドを見て片方が見ない、という状態を作らないため。同じマシンで
+    2つのコマンドが違う GPU を前提に計算したら、予算の数字が食い違う。
+    """
+    r = resolve("llama_servers", cli_values, config)
+    if r.value is not None:
+        return r
+    single = resolve("llama_server", None, config, "llama-server")
+    return single._replace(value=[single.value])
+
+
+def split_repeated(values: list[str] | None) -> list[str] | None:
+    """``--llama-server a --llama-server b,c`` を1つの並びにする."""
+    if not values:
+        return None
+    out = [x.strip() for item in values for x in item.split(",") if x.strip()]
+    return out or None
+
+
 def render_show_config(resolved: dict[str, Resolved], path: Path | None) -> str:
     """``--show-config`` の出力。どの値がどこから来たかを一覧にする."""
     lines = ["settings in effect (cli > env > config file > detected > default)", ""]

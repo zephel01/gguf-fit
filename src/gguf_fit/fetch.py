@@ -48,10 +48,17 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from . import _hardware
-from ._config import drop_detectable, load_config, render_show_config, resolve
+from ._config import (
+    drop_detectable,
+    load_config,
+    render_show_config,
+    resolve,
+    resolve_llama_servers,
+    split_repeated,
+)
 from ._ggufhdr import Header, TruncatedGGUF, parse_header
 from ._messages import DEFAULT_LANG, pad, t, width
-from .plan import DEFAULT_OVERHEAD_GIB, GIB, KvRates, max_ctx
+from .plan import DEFAULT_OVERHEAD_GIB, GIB, KvRates, budget_warnings, max_ctx
 from .probe import summarize_tensors
 
 #: HF のエンドポイント。ミラーを使う人がいるので環境変数を見る
@@ -512,6 +519,8 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--json", action="store_true", help=t("help_fetch_json", DEFAULT_LANG))
     ap.add_argument("--hf-bin", default=None, dest="hf_bin",
                     help=t("help_hf_bin", DEFAULT_LANG))
+    ap.add_argument("--llama-server", action="append", default=None,
+                    dest="llama_server", help=t("help_llama_server", DEFAULT_LANG))
     ap.add_argument("--lang", default=None, choices=["en", "ja"],
                     help=t("help_lang", DEFAULT_LANG))
     ap.add_argument("--config", default=None,
@@ -580,7 +589,10 @@ def main() -> int:
     cfg, cfg_path = load_config(args.config)
     if args.refresh:
         cfg = drop_detectable(cfg)
-    hw = _hardware.detect(cfg.get("llama_servers") or "llama-server")
+    # llama-server の探し方は gguf-plan と**同じ関数**を通す。ここが食い違うと、
+    # 同じマシンで gguf-fetch と gguf-plan が違う GPU を前提に予算を出す
+    r_llama = resolve_llama_servers(split_repeated(args.llama_server), cfg)
+    hw = _hardware.detect(r_llama.value)
     r_lang = resolve("lang", args.lang, cfg, DEFAULT_LANG)
     r_device = resolve("device", None, cfg, detected=hw.suggested_device())
     device = str(r_device.value) if r_device.value else None
@@ -591,9 +603,17 @@ def main() -> int:
     lang = r_lang.value
 
     if args.show_config:
+        # **device と検出結果も出す。**予算はデバイスの容量から取っているので、
+        # そこを伏せると「48.0 GiB がどこから来たのか」に答えられていない
         print(render_show_config(
             {"lang": r_lang, "vram": r_vram, "overhead": r_overhead,
+             "device": r_device, "llama_servers": r_llama,
              "models_dir": r_dir, "hf_bin": r_hf_bin}, cfg_path))
+        print()
+        print(_hardware.render(hw))
+        if not hw.gpus:
+            print()
+            print(t("hint_no_devices", lang))
         return 0
     if not args.repo:
         ap.error("repo is required (for example: ornith-ai/Ornith-1.5-35B-A3B-GGUF)")
@@ -604,6 +624,13 @@ def main() -> int:
         print("# " + t("hint_no_devices", lang), file=sys.stderr)
         ap.error("could not detect any GPU, so --vram is required "
                  "(or set vram in the config file)")
+
+    # 予算の取り方が怪しいときは、**転送を始める前に**言う。gguf-plan と同じ
+    # 文面を同じ関数から出す (片方だけが黙っていると、同じマシンで違う予算に
+    # なった理由が分からない)
+    for line in budget_warnings(hw, device, vram, r_vram.source,
+                                r_device.source, lang):
+        print(line, file=sys.stderr)
 
     try:
         info = repo_info(args.repo, args.revision)

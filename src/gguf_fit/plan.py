@@ -61,6 +61,8 @@ from ._config import (
     render_show_config,
     render_toml,
     resolve,
+    resolve_llama_servers,
+    split_repeated,
 )
 from ._messages import DEFAULT_LANG, pad, t, width
 
@@ -254,6 +256,44 @@ def cmd_table(recs, vram, overhead, ctx_req, lang=DEFAULT_LANG, calibrated=None)
         if ctx_req:
             line += f"   {fit}"
         print(line)
+
+
+def budget_warnings(hw, picked_device: str | None, vram: float | None,
+                    vram_source: str, device_source: str,
+                    lang: str = DEFAULT_LANG) -> list[str]:
+    """予算の取り方が怪しいときの注意書き。**gguf-plan と gguf-fetch で共有**.
+
+    片方だけが「一番大きい = 一番速い、ではない」と言い、もう片方が黙って
+    同じ device を選ぶ、という状態を作らないためにここに集めてある。
+    実機 (5090 / 3090 / 8060S が CUDA・ROCm・Vulkan で同居) では、容量だけで
+    自動選択すると **96 GiB の APU を勧めて、生成速度で 5090 に負ける**。
+    """
+    out: list[str] = []
+    disagree = hw.free_figures_disagree(picked_device)
+    if disagree is not None:
+        dev, driver_free = disagree
+        out.append("# " + t("warn_free_disagrees", lang, name=dev.name,
+                            runtime=dev.free_gib, driver=driver_free,
+                            total=dev.total_gib))
+
+    tight = hw.tight_on_free_memory(picked_device)
+    if tight is not None:
+        out.append("# " + t("warn_low_free", lang, name=tight.name,
+                            total=tight.total_gib, free=tight.free_gib))
+
+    if _hardware.has_mixed_backends(hw) and device_source == "detected":
+        big = hw.largest_gpu
+        kinds = ", ".join(sorted({g.device_id.rstrip("0123456789")
+                                  for g in hw.gpus if g.device_id}))
+        out.append("# " + t("warn_mixed_backends", lang, kinds=kinds,
+                            name=big.name, total=big.total_gib))
+
+    if vram is not None and vram_source != "detected" and \
+            _hardware.vram_disagrees(vram, hw, picked_device):
+        out.append("# " + t("warn_vram_mismatch", lang, given=vram,
+                            source=vram_source,
+                            detected=hw.suggested_vram_gib()))
+    return out
 
 
 def _header_lines(rec: dict, ctx: int, kv_mode: str, vram: float, overhead: float,
@@ -495,15 +535,9 @@ def main() -> int:
         # ハードウェアを見て取り直す手段を用意しておく。
         cfg = drop_detectable(cfg)
     # --llama-server は複数回渡せる。カンマ区切りも受ける。
-    cli_bins = None
-    if args.llama_server:
-        cli_bins = [x.strip() for a in args.llama_server
-                    for x in a.split(",") if x.strip()]
-    r_llama = resolve("llama_servers", cli_bins, cfg)
-    if r_llama.value is None:
-        # 単数形のキー / 環境変数にも対応する
-        single = resolve("llama_server", None, cfg, "llama-server")
-        r_llama = single._replace(value=[single.value])
+    # 解決そのものは gguf-fetch と共有する (_config)。片方だけが ROCm ビルドを
+    # 見る状態になると、同じマシンで2つのコマンドが違う予算を出す
+    r_llama = resolve_llama_servers(split_repeated(args.llama_server), cfg)
     hw = _hardware.detect(r_llama.value)
     r_lang = resolve("lang", args.lang, cfg, DEFAULT_LANG)
     # **device を先に決める。**予算はそのデバイスの容量から取る。
@@ -565,31 +599,9 @@ def main() -> int:
     # 実測が取れているのに指定値と 食い違うなら、そう言う。
     # 総量は足りていても、いま空いていなければ載らない。
     # 統合GPUで実際に見た: 総量 96 GiB / 空き 16.3 GiB。
-    disagree = hw.free_figures_disagree(picked_device)
-    if disagree is not None:
-        dev, driver_free = disagree
-        print("# " + t("warn_free_disagrees", lang, name=dev.name,
-                       runtime=dev.free_gib, driver=driver_free,
-                       total=dev.total_gib), file=sys.stderr)
-
-    tight = hw.tight_on_free_memory(picked_device)
-    if tight is not None:
-        print("# " + t("warn_low_free", lang, name=tight.name,
-                       total=tight.total_gib, free=tight.free_gib),
-              file=sys.stderr)
-
-    if _hardware.has_mixed_backends(hw) and r_device.source == "detected":
-        big = hw.largest_gpu
-        kinds = ", ".join(sorted({g.device_id.rstrip("0123456789")
-                                  for g in hw.gpus if g.device_id}))
-        print("# " + t("warn_mixed_backends", lang, kinds=kinds,
-                       name=big.name, total=big.total_gib), file=sys.stderr)
-
-    if r_vram.source != "detected" and _hardware.vram_disagrees(
-            vram, hw, picked_device):
-        print("# " + t("warn_vram_mismatch", lang, given=vram,
-                       source=r_vram.source, detected=hw.suggested_vram_gib()),
-              file=sys.stderr)
+    for line in budget_warnings(hw, picked_device, vram, r_vram.source,
+                                r_device.source, lang):
+        print(line, file=sys.stderr)
 
     recs = json.loads(Path(args.json_path).read_text(encoding="utf-8"))
     if isinstance(recs, dict):

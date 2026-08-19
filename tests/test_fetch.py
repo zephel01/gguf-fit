@@ -24,7 +24,7 @@ from typing import ClassVar
 
 import pytest
 
-from gguf_fit import _ggufhdr, fetch
+from gguf_fit import _config, _ggufhdr, _hardware, fetch
 from gguf_fit._messages import pad, width
 
 # --- 合成 GGUF ------------------------------------------------------------
@@ -378,20 +378,90 @@ def test_fetch_header_gives_up_instead_of_downloading_the_model(hf_server):
         fetch.fetch_header(url, first=16, limit=64)
 
 
-class _FakeHw:
-    def suggested_device(self):
-        return None
+def _no_gpu_machine():
+    """GPU が1枚も無いマシン.
 
-    def suggested_vram_gib(self, _device=None):
-        return None
+    **本物の Hardware を使う。**スタブを自作すると、_hardware に生えたメソッドを
+    fetch が呼び始めたときにテストだけが素通りする（実際 budget_warnings を
+    足したときにそれが起きた）。
+    """
+    return _hardware.Hardware(gpus=[], ram_gib=64.0, physical_cores=8,
+                              logical_cores=16, unified_memory=False)
 
-    def suggested_threads(self):
-        return None
+
+# --- gguf-plan と食い違わせない -------------------------------------------
+
+def test_llama_server_resolution_is_shared_with_gguf_plan():
+    """片方だけが ROCm ビルドを見ると、同じマシンで予算の数字が食い違う."""
+    # 単数形しか書いていない人も、複数形で書いた人も、両方拾う
+    assert _config.resolve_llama_servers(None, {}).value == ["llama-server"]
+    assert _config.resolve_llama_servers(
+        None, {"llama_server": "/opt/cuda/llama-server"}
+    ).value == ["/opt/cuda/llama-server"]
+    assert _config.resolve_llama_servers(
+        None, {"llama_servers": ["/a/llama-server", "/b/llama-server"]}
+    ).value == ["/a/llama-server", "/b/llama-server"]
+    # CLI は設定より強い
+    assert _config.resolve_llama_servers(["/cli/llama-server"], {"llama_server": "/x"}
+                                         ).value == ["/cli/llama-server"]
+
+
+def test_repeated_flags_and_commas_flatten_the_same_way():
+    assert _config.split_repeated(["a", "b,c"]) == ["a", "b", "c"]
+    assert _config.split_repeated([]) is None
+    assert _config.split_repeated(None) is None
+
+
+def _mixed_backend_machine():
+    """実機: CUDA の 5090 / 3090 と、ROCm から見える APU 8060S が同居.
+
+    容量だけで選ぶと **96 GiB の APU** が勝つが、生成速度では 5090 に負ける。
+    ここで黙って APU を選ぶと、利用者は理由を知らないまま遅いほうで回す。
+    """
+    return _hardware.Hardware(
+        gpus=[
+            _hardware.Gpu(0, "NVIDIA GeForce RTX 5090", 31.4, 0.4,
+                          device_id="CUDA0", free_gib=31.0),
+            _hardware.Gpu(1, "NVIDIA GeForce RTX 3090", 23.6, 0.3,
+                          device_id="CUDA1", free_gib=23.3),
+            _hardware.Gpu(2, "AMD Radeon 8060S Graphics", 96.0, 0.2,
+                          device_id="ROCm0", free_gib=95.8),
+        ],
+        ram_gib=128.0, physical_cores=16, logical_cores=32, unified_memory=False)
+
+
+def test_mixed_backends_are_flagged_before_any_transfer(
+        hf_server, monkeypatch, tmp_path, capsys):
+    """gguf-plan が言うことを gguf-fetch が黙っていてはいけない."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(fetch._hardware, "detect",
+                        lambda _b: _mixed_backend_machine())
+    monkeypatch.setattr("sys.argv", ["gguf-fetch", "org/repo", "--json"])
+    assert fetch.main() == 0
+    captured = capsys.readouterr()
+    assert "ROCm" in captured.err and "CUDA" in captured.err
+    assert "8060S" in captured.err
+    # 予算は一番大きいデバイスから取られている
+    assert json.loads(captured.out)["vram_gib"] == 96.0
+
+
+def test_show_config_says_where_the_budget_came_from(monkeypatch, tmp_path, capsys):
+    """予算はデバイスの容量から取る。**device を伏せたら説明になっていない**."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(fetch._hardware, "detect", lambda _b: _no_gpu_machine())
+    monkeypatch.setattr(fetch._hardware, "render", lambda _hw: "detected hardware\n  GPU  none")
+    monkeypatch.setattr("sys.argv", ["gguf-fetch", "--show-config"])
+    assert fetch.main() == 0
+    out = capsys.readouterr().out
+    for key in ("lang", "vram", "overhead", "device", "llama_servers",
+                "models_dir", "hf_bin"):
+        assert key in out
+    assert "detected hardware" in out
 
 
 def test_end_to_end_json(hf_server, monkeypatch, tmp_path, capsys):
     monkeypatch.chdir(tmp_path)          # リポジトリの gguf-fit.toml を拾わせない
-    monkeypatch.setattr(fetch._hardware, "detect", lambda _b: _FakeHw())
+    monkeypatch.setattr(fetch._hardware, "detect", lambda _b: _no_gpu_machine())
     monkeypatch.setattr("sys.argv", [
         "gguf-fetch", "org/repo", "--vram", "24", "--fit", "--json"])
     assert fetch.main() == 0
@@ -409,7 +479,7 @@ def test_end_to_end_json(hf_server, monkeypatch, tmp_path, capsys):
 
 def test_pick_downloads_only_that_one(hf_server, monkeypatch, tmp_path, capsys):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(fetch._hardware, "detect", lambda _b: _FakeHw())
+    monkeypatch.setattr(fetch._hardware, "detect", lambda _b: _no_gpu_machine())
     monkeypatch.setattr("sys.argv", [
         "gguf-fetch", "org/repo", "--pick", "Q8_0", "--json", "--mmproj", "none"])
     assert fetch.main() == 0
@@ -420,7 +490,7 @@ def test_pick_downloads_only_that_one(hf_server, monkeypatch, tmp_path, capsys):
 def test_all_takes_every_gguf_but_not_the_readme(hf_server, monkeypatch,
                                                  tmp_path, capsys):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(fetch._hardware, "detect", lambda _b: _FakeHw())
+    monkeypatch.setattr(fetch._hardware, "detect", lambda _b: _no_gpu_machine())
     monkeypatch.setattr("sys.argv", ["gguf-fetch", "org/repo", "--all", "--json"])
     assert fetch.main() == 0
     out = json.loads(capsys.readouterr().out)
@@ -430,7 +500,7 @@ def test_all_takes_every_gguf_but_not_the_readme(hf_server, monkeypatch,
 def test_dry_run_prints_the_command_and_downloads_nothing(
         hf_server, monkeypatch, tmp_path, capsys):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(fetch._hardware, "detect", lambda _b: _FakeHw())
+    monkeypatch.setattr(fetch._hardware, "detect", lambda _b: _no_gpu_machine())
     monkeypatch.setattr(fetch.subprocess, "run", _never_called)
     monkeypatch.setattr("sys.argv", [
         "gguf-fetch", "org/repo", "--vram", "24", "--fit", "--dry-run",
