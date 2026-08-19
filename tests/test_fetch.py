@@ -445,6 +445,71 @@ def test_mixed_backends_are_flagged_before_any_transfer(
     assert json.loads(captured.out)["vram_gib"] == 96.0
 
 
+def test_enclosing_git_repo_walks_up(tmp_path):
+    (tmp_path / ".git").mkdir()
+    deep = tmp_path / "a" / "b" / "models"
+    assert fetch.enclosing_git_repo(deep) == tmp_path.resolve()
+
+
+def test_enclosing_git_repo_handles_a_dot_git_file(tmp_path):
+    """worktree や submodule では .git は**ファイル**。ディレクトリ決め打ちは駄目."""
+    (tmp_path / ".git").write_text("gitdir: /elsewhere\n", encoding="utf-8")
+    assert fetch.enclosing_git_repo(tmp_path / "models") == tmp_path.resolve()
+
+
+def test_warns_when_models_would_land_in_a_source_checkout(
+        hf_server, monkeypatch, tmp_path, capsys):
+    """--dir の付け忘れで 72GB がチェックアウトに落ちる。.gitignore が隠すので
+    git status では気づけない."""
+    (tmp_path / ".git").mkdir()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(fetch._hardware, "detect", lambda _b: _no_gpu_machine())
+    monkeypatch.setattr(fetch.subprocess, "run", _never_called)
+    monkeypatch.setattr("sys.argv", [
+        "gguf-fetch", "org/repo", "--vram", "24", "--fit", "--dry-run"])
+    assert fetch.main() == 0
+    assert "git" in capsys.readouterr().err
+
+
+def test_no_such_warning_outside_a_repo(hf_server, monkeypatch, tmp_path, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(fetch._hardware, "detect", lambda _b: _no_gpu_machine())
+    monkeypatch.setattr(fetch.subprocess, "run", _never_called)
+    monkeypatch.setattr("sys.argv", [
+        "gguf-fetch", "org/repo", "--vram", "24", "--fit", "--dry-run",
+        "--dir", str(tmp_path / "models")])
+    assert fetch.main() == 0
+    assert "models_dir" not in capsys.readouterr().err
+
+
+def test_dry_run_still_shows_the_command_when_the_disk_is_too_small(
+        hf_server, monkeypatch, tmp_path, capsys):
+    """「落とさずコマンドだけ見せろ」に、空き容量を理由に黙るのは答えではない."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(fetch._hardware, "detect", lambda _b: _no_gpu_machine())
+    monkeypatch.setattr(fetch.subprocess, "run", _never_called)
+    monkeypatch.setattr(fetch, "disk_free_gib", lambda _p: 1.0)
+    monkeypatch.setattr("sys.argv", [
+        "gguf-fetch", "org/repo", "--vram", "24", "--fit", "--dry-run",
+        "--dir", str(tmp_path / "models")])
+    assert fetch.main() == 1              # 足りないことは終了コードに残す
+    out = capsys.readouterr().out
+    assert "hf download org/repo" in out  # それでもコマンドは出す
+
+
+def test_a_real_run_stops_when_the_disk_is_too_small(
+        hf_server, monkeypatch, tmp_path, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(fetch._hardware, "detect", lambda _b: _no_gpu_machine())
+    monkeypatch.setattr(fetch.subprocess, "run", _never_called)
+    monkeypatch.setattr(fetch, "disk_free_gib", lambda _p: 1.0)
+    monkeypatch.setattr("sys.argv", [
+        "gguf-fetch", "org/repo", "--vram", "24", "--fit", "-y",
+        "--dir", str(tmp_path / "models")])
+    assert fetch.main() == 1
+    assert "hf download" not in capsys.readouterr().out
+
+
 def test_show_config_says_where_the_budget_came_from(monkeypatch, tmp_path, capsys):
     """予算はデバイスの容量から取る。**device を伏せたら説明になっていない**."""
     monkeypatch.chdir(tmp_path)

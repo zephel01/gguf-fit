@@ -473,6 +473,28 @@ def download_command(binary: str, repo: str, files: list[str], dest: Path,
     return cmd
 
 
+def enclosing_git_repo(path: Path) -> Path | None:
+    """``path`` が git の作業ツリーの中なら、そのルートを返す.
+
+    モデルをソースのチェックアウトに落とすのは、たいてい ``--dir`` を
+    付け忘れただけ（``models_dir`` の既定はカレントなので、リポジトリの中で
+    実行するとそうなる）。しかも **``.gitignore`` に ``*.gguf`` が入っていると
+    ``git status`` は綺麗なまま**なので、置いたことに気づく機会が無い。
+    数十GB が黙って居座る。
+
+    ``git`` は呼ばない。``.git`` を上に辿るだけ（ファイルのこともある —
+    worktree や submodule ではファイル）。
+    """
+    try:
+        current = path.expanduser().resolve()
+    except OSError:  # pragma: no cover - 解決できないパスは黙って諦める
+        return None
+    for candidate in (current, *current.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return None
+
+
 def disk_free_gib(path: Path) -> float | None:
     """書き先の空き容量。取れなければ ``None``（**0 ではない**）."""
     probe_path = path
@@ -722,13 +744,25 @@ def main() -> int:
             print(f"  {name}")
     print(f"  -> {dest}")
 
+    repo_root = enclosing_git_repo(dest)
+    if repo_root is not None:
+        print(t("fetch_inside_repo", lang, dest=dest, root=repo_root),
+              file=sys.stderr)
+
     free = disk_free_gib(dest)
+    short_on_disk = False
     if free is not None:
         need = total / GIB
-        if free < need:
+        short_on_disk = free < need
+        if short_on_disk:
             print(t("fetch_disk_short", lang, free=free, need=need))
-            return 1
-        print(t("fetch_disk_ok", lang, free=free))
+            # **--dry-run では止めない。**「落とさずコマンドだけ見せろ」と
+            # 言われているのに、空き容量を理由に何も出さないのでは答えに
+            # ならない。空けてから流すのはこちらの都合ではなく利用者の判断
+            if not args.dry_run:
+                return 1
+        else:
+            print(t("fetch_disk_ok", lang, free=free))
 
     binary = hf_binary(str(r_hf_bin.value) if r_hf_bin.value else None)
     cmd = download_command(binary or "hf", args.repo, files, dest, args.revision)
@@ -736,7 +770,8 @@ def main() -> int:
     print(shlex.join(cmd))
 
     if args.dry_run:
-        return 0
+        # 容量が足りないことは伝わっているので、終了コードには残す
+        return 1 if short_on_disk else 0
     if binary is None:
         print()
         print(t("fetch_no_hf", lang), file=sys.stderr)

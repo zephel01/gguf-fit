@@ -627,6 +627,17 @@ MESSAGES: dict[str, dict[str, str]] = {
         "en": "downloading {n} file(s), {gib:.2f} GiB total:",
         "ja": "落とすもの: {n} ファイル / 合計 {gib:.2f} GiB",
     },
+    "fetch_inside_repo": {
+        "en": "!! {dest} is inside the git working tree at {root}. Models dropped in "
+              "a source checkout get forgotten -- and if .gitignore covers *.gguf, "
+              "git status stays clean, so nothing ever reminds you. Pass --dir, or "
+              "set models_dir in the config file.",
+        "ja": "!! 落とし先 {dest} は {root} の git 作業ツリーの中です。ソースの"
+              "チェックアウトに置いたモデルは忘れます。しかも .gitignore に "
+              "*.gguf が入っていれば git status は綺麗なままなので、"
+              "気づく機会がありません。--dir か、設定の models_dir を使って"
+              "ください。",
+    },
     "fetch_disk_ok": {
         "en": "# disk free: {free:.1f} GiB",
         "ja": "# ディスクの空き: {free:.1f} GiB",
