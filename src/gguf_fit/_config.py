@@ -56,6 +56,10 @@ KNOWN_KEYS: dict[str, type] = {
     # gguf-calibrate が書く実測値 (B/token)。理論値より優先する
     "kv_f16_bytes": float,
     "kv_q8_bytes": float,
+    # 較正値が**どのモデルで測られたか**。KV の単価は層構造で決まるモデル固有の
+    # 値なのに、設定ファイルに書くと以降すべてのモデルに当たる。照合用に残す
+    "kv_measured_on": str,
+    "kv_derived_f16_bytes": float,
     "model_path": str,
     # gguf-fetch: 落とし先と、使う hf コマンド
     "models_dir": str,

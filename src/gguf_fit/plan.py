@@ -258,6 +258,39 @@ def cmd_table(recs, vram, overhead, ctx_req, lang=DEFAULT_LANG, calibrated=None)
         print(line)
 
 
+#: 較正値が「別のモデルで測ったもの」と判断する比。GGUF からの計算値どうしを
+#: 比べるので、同じモデルなら一致するはず。1.15 は丸めと版差のための余裕
+CALIBRATION_MISMATCH_RATIO = 1.15
+
+
+def calibration_mismatch(rec: dict, cfg: dict,
+                         lang: str = DEFAULT_LANG) -> str | None:
+    """設定の較正値が、**いま見ているモデルのものでない**なら注意書きを返す.
+
+    ``kv_f16_bytes`` は層構造で決まる**モデル固有の値**なのに、設定ファイルに
+    書くと以降すべてのモデルに当たる。実際に起きた: Qwen3.8-27B で測った
+    69.1 KB/token が、KV が 22.0 KB/token しかない Ornith-1.5-35B にも使われ、
+    最大 ctx を3倍近く低く出した。**数字は静かに出るので気づけない。**
+
+    判定は名前ではなく数字で行う。``gguf-calibrate`` が書き残した「測った
+    モデルの GGUF からの計算値」と、いま見ているモデルの計算値を比べる。
+    記録が無い設定ファイル (古いもの) では何も言わない —— 比べる相手が
+    無いのに警告するのは当て推量になる。
+    """
+    measured = cfg.get("kv_f16_bytes")
+    origin = cfg.get("kv_derived_f16_bytes")
+    here = (rec.get("kv_cache") or {}).get("bytes_per_token_f16")
+    if not measured or not origin or not here:
+        return None
+    ratio = max(origin, here) / min(origin, here)
+    if ratio < CALIBRATION_MISMATCH_RATIO:
+        return None
+    return "# " + t("warn_calibration_model", lang,
+                    file=cfg.get("kv_measured_on") or "?",
+                    there=origin / 1024, here=here / 1024, ratio=ratio,
+                    kb=measured / 1024)
+
+
 def budget_warnings(hw, picked_device: str | None, vram: float | None,
                     vram_source: str, device_source: str,
                     lang: str = DEFAULT_LANG) -> list[str]:
@@ -609,6 +642,11 @@ def main() -> int:
     lm = [r for r in recs if r.get("is_language_model") and r.get("kv_cache")]
     if not lm:
         sys.exit(t("err_no_lm", lang))
+
+    # 較正値が別のモデルで測ったものなら、表を出す前に言う
+    mismatch = calibration_mismatch(lm[0], cfg, lang)
+    if mismatch:
+        print(mismatch, file=sys.stderr)
 
     if not args.pick:
         print(t("budget_line", lang, vram=vram, overhead=overhead) + "\n")

@@ -88,6 +88,10 @@ class Header(NamedTuple):
     tensors: list[tuple[str, str]]
     #: ヘッダが何バイトで終わったか。ここから先が実データ
     header_bytes: int
+    #: 全テンソルの要素数の合計 = **パラメータ数**。
+    #: 量子化しても変わらない（型が変わるだけ）ので、代表1本読めば
+    #: 同じリポジトリの全量子化について「実測 bpw」が出せる
+    n_params: int = 0
 
 
 def type_name(code: int) -> str:
@@ -205,12 +209,17 @@ def parse_header(data: bytes, want: tuple[str, ...] | None = None) -> Header:
             metadata[str(key)] = value
 
     tensors: list[tuple[str, str]] = []
+    n_params = 0
     for _ in range(n_tensors):
         name = cur.string()
         n_dims = cur.u32()
-        cur.skip(8 * n_dims)          # 形は使わないので飛ばす
+        # 形は要素数を数えるためだけに読む。**ここを飛ばすと bpw が出せない**
+        elements = 1
+        for _dim in range(n_dims):
+            elements *= cur.u64()
+        n_params += elements
         code = cur.u32()
         cur.skip(8)                   # データオフセット。ここでは要らない
         tensors.append((str(name), type_name(code)))
 
-    return Header(version, metadata, tensors, cur.i)
+    return Header(version, metadata, tensors, cur.i, n_params)

@@ -26,6 +26,7 @@ import pytest
 
 from gguf_fit import _config, _ggufhdr, _hardware, fetch
 from gguf_fit._messages import pad, width
+from gguf_fit.plan import calibration_mismatch
 
 # --- 合成 GGUF ------------------------------------------------------------
 
@@ -164,12 +165,43 @@ SIBLINGS = [
     {"rfilename": "M-Q8_0-00002-of-00002.gguf", "size": 3_000_000_000},
     {"rfilename": "mmproj-M-F16.gguf", "size": 900_000_000},
     {"rfilename": "mmproj-M-Q8_0.gguf", "size": 500_000_000},
+    # 実物 (unsloth/Qwen3.8-27B-GGUF) にあった形。**本体ではない**のに
+    # ラベルが Q4_0 で衝突し、一番小さいので代表に選ばれていた
+    {"rfilename": "MTP/mtp-M-Q4_0.gguf", "size": 1_280_000_000},
+    {"rfilename": "M-Q4_0.gguf", "size": 14_950_000_000},
 ]
 
 
+def test_subdirectory_gguf_is_not_a_candidate():
+    """MTP の draft を本体と並べると、ラベルも代表もそれに食われる."""
+    body, _projs, extra = fetch.group_files(SIBLINGS)
+    assert [c.files[0] for c in extra] == ["MTP/mtp-M-Q4_0.gguf"]
+    assert "MTP/mtp-M-Q4_0.gguf" not in [f for c in body for f in c.files]
+    # ラベルが一意であること。--pick Q4_0 が2つ当たってはいけない
+    labels = [c.label for c in body]
+    assert len(labels) == len(set(labels))
+    assert "Q4_0" in labels
+
+
+def test_colliding_labels_get_spelled_out():
+    body, _p, _e = fetch.group_files([
+        {"rfilename": "a-Q4_0.gguf", "size": 10},
+        {"rfilename": "b-Q4_0.gguf", "size": 20},
+    ])
+    assert sorted(c.label for c in body) == ["a-Q4_0", "b-Q4_0"]
+
+
+def test_a_tensor_poor_file_is_not_accepted_as_the_representative():
+    """実物: MTP の draft は 65層に対してテンソル 18本。本体は 866本."""
+    full = _rec(20.0)
+    assert fetch.looks_like_the_main_model(full)
+    assert not fetch.looks_like_the_main_model({**full, "n_tensors": 2})
+    assert not fetch.looks_like_the_main_model({**full, "kv_cache": None})
+
+
 def test_group_files_merges_shards_and_splits_mmproj():
-    body, projs = fetch.group_files(SIBLINGS)
-    assert [c.label for c in body] == ["Q4_K_M", "Q8_0"]
+    body, projs, _extra = fetch.group_files(SIBLINGS)
+    assert [c.label for c in body] == ["Q4_K_M", "Q8_0", "Q4_0"]
     q8 = body[1]
     # 分割は1つの候補。**サイズは合計**でなければ「載る」と誤判定する
     assert len(q8.files) == 2
@@ -179,17 +211,94 @@ def test_group_files_merges_shards_and_splits_mmproj():
 
 
 def test_mmproj_auto_takes_the_smallest_one():
-    _body, projs = fetch.group_files(SIBLINGS)
+    _body, projs, _extra = fetch.group_files(SIBLINGS)
     assert [c.files for c in fetch.pick_mmproj(projs, "auto")] == \
         [("mmproj-M-Q8_0.gguf",)]
     assert len(fetch.pick_mmproj(projs, "all")) == 2
     assert fetch.pick_mmproj(projs, "none") == []
 
 
+# --- bpw / 絞り込み --------------------------------------------------------
+
+def test_bpw_is_the_measured_bit_width_not_the_name():
+    """検算: 16 bit の重み n 個は n*2 バイト → ちょうど 16.00 bpw.
+
+    実測でも BF16 は Qwen3.8-27B で 16.00、Ornith-1.5-35B で 16.01 になった。
+    ここがずれていたらパラメータ数の数え方が間違っている。
+    """
+    assert fetch.bits_per_weight(2000, 1000) == 16.0
+    assert fetch.bits_per_weight(1000, 0) is None
+    # 実物の値: UD-Q6_K_XL は名前に 6 と入っているが 7.41 bpw だった
+    assert round(fetch.bits_per_weight(25_296_000_000, 27_320_000_000), 2) == 7.41
+
+
+def test_parse_header_counts_parameters():
+    header = _ggufhdr.parse_header(build_gguf(MODEL_META, MODEL_TENSORS))
+    # build_gguf は全テンソルを 8x8 で書く
+    assert header.n_params == 64 * len(MODEL_TENSORS)
+
+
+def test_spread_picks_across_the_range_not_the_top_three():
+    """実物の --top 3 は 8.2 / 8.5 / 9.2 bpw を返した。3本とも同じビット帯."""
+    verdicts = []
+    for i, size in enumerate([8, 12, 16, 20, 24]):
+        rec = {**_rec(float(size)), "n_params": 20_000_000_000}
+        verdicts.append(fetch.Verdict(
+            _cand(f"q{i}", float(size)), rec, "f16", 0, 0, 0, True, "ctx"))
+    top = [v.cand.label for v in fetch.choose(verdicts, 3)]
+    spread = [v.cand.label for v in fetch.choose(verdicts, 3, spread=True)]
+    assert top == ["q4", "q3", "q2"]          # 上から3本 = 隣どうし
+    assert spread == ["q4", "q2", "q0"]       # 端と真ん中 (大きい順のまま)
+    assert spread[0] != spread[-1]
+
+
+def test_min_bpw_drops_the_light_end():
+    verdicts = []
+    for i, size in enumerate([2, 12, 24]):
+        rec = {**_rec(float(size)), "n_params": 20_000_000_000}
+        verdicts.append(fetch.Verdict(
+            _cand(f"q{i}", float(size)), rec, "f16", 0, 0, 0, True, "ctx"))
+    # 2 GB / 20B params = 0.8 bpw。1bit 量子化は比較の相手にならない
+    assert [v.cand.label for v in fetch.choose(verdicts, 3, min_bpw=4.0)] == \
+        ["q2", "q1"]
+
+
+def test_only_and_exclude_are_globs_over_label_and_filename():
+    body, _p, _e = fetch.group_files(SIBLINGS)
+    assert [c.label for c in fetch.filter_candidates(body, ["Q8*"], None)] == ["Q8_0"]
+    assert [c.label for c in fetch.filter_candidates(body, None, ["Q4*"])] == ["Q8_0"]
+    # 大文字小文字は無視する
+    assert fetch.filter_candidates(body, ["q4_k_m"], None)[0].label == "Q4_K_M"
+    assert fetch.filter_candidates(body, ["nope*"], None) == []
+
+
+def test_calibration_measured_on_another_model_is_flagged():
+    """実際に起きた: Qwen で測った 69.1 KB/token が Ornith の計画に使われ、
+    最大 ctx が3倍近く低く出た。**数字は静かに出るので気づけない**."""
+    qwen_like = {**_rec(20.0)}
+    qwen_like["kv_cache"] = {**qwen_like["kv_cache"], "bytes_per_token_f16": 69632}
+    ornith_like = {**_rec(20.0)}
+    ornith_like["kv_cache"] = {**ornith_like["kv_cache"], "bytes_per_token_f16": 22528}
+    cfg = {"kv_f16_bytes": 70720, "kv_derived_f16_bytes": 69632,
+           "kv_measured_on": "Qwen3.8-27B-Q5_K_M.gguf"}
+
+    assert calibration_mismatch(qwen_like, cfg) is None       # 本人には言わない
+    warned = calibration_mismatch(ornith_like, cfg, "ja")
+    assert warned and "Qwen3.8-27B-Q5_K_M.gguf" in warned
+
+    # 記録が無い古い設定では黙る。比べる相手が無いのに警告するのは当て推量
+    assert calibration_mismatch(ornith_like, {"kv_f16_bytes": 70720}) is None
+    # 較正していなければ関係ない
+    assert calibration_mismatch(ornith_like, {"kv_derived_f16_bytes": 69632}) is None
+
+
 def test_pick_prefers_an_exact_label():
-    body, _ = fetch.group_files(SIBLINGS)
+    body, _p, _e = fetch.group_files(SIBLINGS)
     assert [c.label for c in fetch.match_pick(body, "q8_0")] == ["Q8_0"]
-    assert [c.label for c in fetch.match_pick(body, "Q4")] == ["Q4_K_M"]
+    # 部分一致は当たったもの全部。Q4 は Q4_K_M と Q4_0 の両方に当たる
+    assert [c.label for c in fetch.match_pick(body, "Q4")] == ["Q4_K_M", "Q4_0"]
+    # 完全一致があればそちらが勝つ
+    assert [c.label for c in fetch.match_pick(body, "Q4_0")] == ["Q4_0"]
     assert fetch.match_pick(body, "IQ2_XXS") == []
 
 

@@ -271,6 +271,23 @@ BF16             66.19G              no               no   no
   the same native ctx, the same MTP tensors. Only the file size moves. The output always
   names the file the figure came from. `--probe all` reads every header instead (more
   transfer); `--probe none` reads none and judges on file size alone, and says so.
+* **The `bpw` column is measured.** File size ÷ parameter count. Parameter counts do not
+  change with quantization, so one header gives it for every row. **This repo started from
+  "the file name lies about the bit width" — here is that lie as a number:** `UD-Q6_K_XL`
+  has a 6 in its name and measures **7.41 bpw**; `UD-Q8_K_XL` is **9.21**, heavier than
+  `Q8_0` (8.51). `BF16` is the check digit: it must come out at exactly 16.00 (measured
+  16.00 and 16.01). If it doesn't, the parameter count is wrong.
+* **Three ways to narrow the field.**
+
+  | | |
+  | :-- | :-- |
+  | `--min-bpw 4.5` | cut on **what is in the file** |
+  | `--spread` | N spread across the bpw range, not the top N |
+  | `--only 'UD-Q?_K_*'` / `--exclude 'IQ*'` | cut on **the name** — not a quality judgement |
+
+  `--spread` exists because of a real result: `--top 3` on unsloth/Qwen3.8-27B returns
+  26.1 / 27.0 / 29.3 GiB — 8.21 / 8.51 / 9.21 bpw, **all three in the same bit tier**.
+  That is 83 GiB downloaded for less than one step of comparison.
 * **What `--fit` picks.** The largest quantizations that fit, `--top 3` of them by default.
   Not one: near the budget line the estimate is an estimate, and having the next one down
   on disk is worth more than the disk it costs. A quantization only counts as fitting if it
@@ -280,6 +297,8 @@ BF16             66.19G              no               no   no
   ships several). `--mmproj all` / `--mmproj none`.
 * **Sharded GGUFs.** `-00001-of-00003` files are grouped into one candidate and their sizes
   summed. Counted separately they would look like three small models that all fit.
+* **GGUFs in subdirectories are not candidates.** `MTP/`, `imatrix/` and friends hold
+  things that are not the model. Learned the hard way — see [the bug list](#before-you-simplify-something).
 * **Before it writes anything** it checks free disk space, prints the exact `hf download`
   command, and asks. `--dry-run` prints and stops; `-y` skips the question.
 
@@ -568,6 +587,17 @@ The tests pin each. Please don't refactor them away.
 5. **GB vs GiB.** Mixing them flips "does it fit on a 24GB card".
 6. **A `#` comment inside a backslash-continued shell command** swallows the `\` and truncates
    the command. There is a test that runs the emitted command through `bash -n`.
+7. **Not every GGUF in a repo is the model.** unsloth/Qwen3.8-27B-GGUF ships
+   `MTP/mtp-...-Q4_0.gguf` (1.28 GiB). `gguf-fetch` treated it as a candidate, its `Q4_0`
+   label collided with the real `Qwen3.8-27B-Q4_0.gguf` (14.95 GiB), and — being the
+   smallest — **it was picked as the representative**, applying its 4.0 KB/token (1 KV layer
+   of 65) to every row. The real model is 68.0 KB/token (17 of 65): **17× out**. The table
+   looked entirely reasonable. Fix: root-level files only, try the largest first, and refuse
+   any representative that fails `n_tensors >= block_count`.
+8. **Calibration is per-model but the config file is global.** 69.1 KB/token measured on
+   Qwen3.8-27B was applied to Ornith-1.5-35B, whose KV costs 22.0 — understating max ctx by
+   nearly 3×. `gguf-calibrate` now records `kv_measured_on` and `kv_derived_f16_bytes`, and
+   both commands warn when the derived figures disagree by more than 1.15×.
 
 </details>
 

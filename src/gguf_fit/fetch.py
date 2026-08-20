@@ -35,6 +35,7 @@ KV/token も native ctx も MTP の有無も同じで、**違うのはファイ�
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import os
 import re
@@ -58,7 +59,14 @@ from ._config import (
 )
 from ._ggufhdr import Header, TruncatedGGUF, parse_header
 from ._messages import DEFAULT_LANG, pad, t, width
-from .plan import DEFAULT_OVERHEAD_GIB, GIB, KvRates, budget_warnings, max_ctx
+from .plan import (
+    DEFAULT_OVERHEAD_GIB,
+    GIB,
+    KvRates,
+    budget_warnings,
+    calibration_mismatch,
+    max_ctx,
+)
 from .probe import summarize_tensors
 
 #: HF のエンドポイント。ミラーを使う人がいるので環境変数を見る
@@ -166,11 +174,45 @@ class Candidate(NamedTuple):
         return self.size_bytes / GIB
 
 
-def group_files(siblings: list[dict]) -> tuple[list[Candidate], list[Candidate]]:
-    """API のファイル一覧を「本体の候補」と「mmproj」に仕分ける.
+def uniquify(cands: list[Candidate]) -> list[Candidate]:
+    """ラベルが衝突したら、ファイル名で区別できるところまで伸ばす.
+
+    ``--pick Q4_0`` が2つ当たる状態を残さない。表に同じ名前の行が2つ並ぶのも
+    「どちらの話をしているのか」が言えなくなるので許さない。
+    """
+    seen: dict[str, int] = {}
+    for c in cands:
+        seen[c.label] = seen.get(c.label, 0) + 1
+    out = []
+    for cand in cands:
+        if seen[cand.label] == 1:
+            out.append(cand)
+            continue
+        stem = cand.files[0].rsplit("/", 1)[-1]
+        out.append(cand._replace(
+            label=stem[:-5] if stem.lower().endswith(".gguf") else stem))
+    return out
+
+
+def group_files(
+    siblings: list[dict],
+) -> tuple[list[Candidate], list[Candidate], list[Candidate]]:
+    """API のファイル一覧を「本体の候補」「mmproj」「その他」に仕分ける.
 
     純粋関数。``siblings`` は ``{"rfilename": ..., "size": ...}`` の並び。
     分割 GGUF は1つの候補にまとめ、サイズは合計する。
+
+    **サブディレクトリの GGUF は本体の候補にしない。**実物で踏んだ:
+    unsloth/Qwen3.8-27B-GGUF には ``MTP/mtp-Qwen3.8-27B-Q4_0.gguf`` (1.28 GiB)
+    が置いてある。これは投機デコード用の**別ファイル**で本体ではないのに、
+
+      * ``Q4_0`` というラベルが本物の ``Qwen3.8-27B-Q4_0.gguf`` (14.95 GiB) と
+        衝突し、``--pick Q4_0`` が2つ当たる
+      * 一番小さいので**代表として選ばれ**、その 4.0 KB/token (KV層 1/65) が
+        全行に当たった。本物は 68.0 KB/token (17/65) で、**17倍ずれる**
+
+    表は「それらしく」出る。だから気づかない。HF の GGUF リポジトリは本体を
+    ルートに置く決まりになっているので、**ルート直下だけを候補**にする。
     """
     groups: dict[str, dict[str, Any]] = {}
     for entry in siblings:
@@ -186,14 +228,33 @@ def group_files(siblings: list[dict]) -> tuple[list[Candidate], list[Candidate]]
 
     body: list[Candidate] = []
     proj: list[Candidate] = []
+    extra: list[Candidate] = []
     for base, slot in groups.items():
         files = tuple(sorted(slot["files"]))
         mm = is_mmproj(base)
         cand = Candidate(quant_label(base), files, slot["size"], mm)
-        (proj if mm else body).append(cand)
-    body.sort(key=lambda c: c.size_bytes)
-    proj.sort(key=lambda c: c.size_bytes)
-    return body, proj
+        if "/" in base:
+            extra.append(cand)      # MTP/ imatrix/ original/ ... 本体ではない
+        elif mm:
+            proj.append(cand)
+        else:
+            body.append(cand)
+    for group in (body, proj, extra):
+        group.sort(key=lambda c: c.size_bytes)
+    return uniquify(body), proj, extra
+
+
+def looks_like_the_main_model(rec: dict) -> bool:
+    """代表として KV の単価を借りてよいレコードか.
+
+    本体には**層ごとに何本もテンソルがある**。65層のモデルで 18本しか無ければ、
+    それは本体ではない (実物: MTP の draft は 18本、本体は 866本)。
+    ``n_tensors >= block_count`` は緩い線だが、桁で外れているものは確実に弾ける。
+    """
+    if not rec.get("is_language_model") or not rec.get("kv_cache"):
+        return False
+    blocks = rec.get("block_count") or 0
+    return rec["n_tensors"] >= max(int(blocks), 1)
 
 
 def pick_mmproj(projs: list[Candidate], mode: str) -> list[Candidate]:
@@ -314,6 +375,7 @@ def record_from_header(header: Header, filename: str, size_bytes: int,
         "n_tensors": len(header.tensors),
     }
     rec["is_language_model"] = rec["architecture"] not in ("clip", "mmproj", None)
+    rec["n_params"] = header.n_params
     for suffix, key in _META_KEYS:
         for name, value in meta.items():
             if name.endswith(suffix):
@@ -336,6 +398,7 @@ def rec_for_size(rec: dict, cand: Candidate) -> dict:
     clone = dict(rec)
     clone["file"] = cand.files[0].rsplit("/", 1)[-1]
     clone["size_gb"] = round(cand.size_bytes / 1e9, 2)
+    # n_params は残す。**量子化で変わらない**ので、これがあれば各行の bpw が出る
     # 量子化の配分は**その1本のもの**なので、持ち越さない。
     # 持ち越すと Q8_0 の行に Q4_K の内訳が出る
     for key in ("quant_mix", "weight_mix", "dominant_weight_type",
@@ -348,6 +411,23 @@ def rec_for_size(rec: dict, cand: Candidate) -> dict:
 # 判定
 # --------------------------------------------------------------------------
 
+def bits_per_weight(size_bytes: int, n_params: int) -> float | None:
+    """**実測の** bpw。ファイルサイズ ÷ パラメータ数。名前ではなく実体.
+
+    このリポジトリの出発点は「ファイル名はビット幅について嘘をつく」だった。
+    ``UD-Q6_K_XL`` は名前に 6 と入っているが実測 **7.41 bpw**、``UD-Q8_K_XL``
+    は **9.21** で ``Q8_0`` (8.51) より重い。名前で並べると隣に見えるものが、
+    実体では 1.5 段違う。
+
+    検算になるのが ``BF16``。定義上ちょうど 16.00 になるはずで、実際に
+    Qwen3.8-27B で 16.00、Ornith-1.5-35B で 16.01 が出た。ここがずれていたら
+    パラメータ数の数え方を間違えている。
+    """
+    if not n_params:
+        return None
+    return size_bytes * 8 / n_params
+
+
 class Verdict(NamedTuple):
     """1つの候補に対する判定."""
 
@@ -359,6 +439,12 @@ class Verdict(NamedTuple):
     ctx_q8: int
     fits: bool
     reason: str  # "ctx" / "size" / "unknown"
+
+    @property
+    def bpw(self) -> float | None:
+        if not self.rec:
+            return None
+        return bits_per_weight(self.cand.size_bytes, self.rec.get("n_params") or 0)
 
 
 def evaluate(cand: Candidate, rec: dict | None, vram: float | None, overhead: float,
@@ -392,16 +478,73 @@ def evaluate(cand: Candidate, rec: dict | None, vram: float | None, overhead: fl
     return Verdict(cand, rec, best, per_mode[best], f16, q8, False, "ctx")
 
 
-def choose(verdicts: list[Verdict], top: int) -> list[Verdict]:
+def choose(verdicts: list[Verdict], top: int, spread: bool = False,
+           min_bpw: float | None = None) -> list[Verdict]:
     """落とすものを選ぶ。**載るものの中で大きいほうから**.
 
     大きい = ビット数が多い = 品質が高い、というのがここでの並べ方。
     ぴったり1本に絞らないのは、境界付近は実測しないと分からないため
     （このツールが出すのは見積りで、測定ではない）。
+
+    ``spread`` を立てると、上から N 本ではなく **bpw の幅を取って** N 本選ぶ。
+    実物で必要になった: unsloth/Qwen3.8-27B の ``--top 3`` は 26.1 / 27.0 /
+    29.3 GiB を返す。8.2 / 8.5 / 9.2 bpw で、**3本とも同じビット帯**。
+    83 GiB 落として比較できるのは 1段ぶんしかない。
     """
     fitting = [v for v in verdicts if v.fits]
+    if min_bpw is not None:
+        fitting = [v for v in fitting if (v.bpw or 0) >= min_bpw]
     fitting.sort(key=lambda v: v.cand.size_bytes, reverse=True)
-    return fitting[:top]
+    if not spread or top >= len(fitting):
+        return fitting[:top]
+    return _spread(fitting, top)
+
+
+def _spread(fitting: list[Verdict], top: int) -> list[Verdict]:
+    """``fitting`` (大きい順) から bpw を散らして ``top`` 本選ぶ.
+
+    一番上は必ず入れる（予算内で最良のものは知りたい）。残りは bpw の
+    範囲を等分した目標値にいちばん近いものを、重複しないように取る。
+    bpw が読めていないときはサイズで代用する（順序は同じ）。
+    """
+    def axis(v: Verdict) -> float:
+        return v.bpw if v.bpw is not None else v.cand.size_bytes
+
+    high, low = axis(fitting[0]), axis(fitting[-1])
+    if high == low:
+        return fitting[:top]
+    chosen = [0]
+    for step in range(1, top):
+        target = high - (high - low) * step / (top - 1)
+        best = min((i for i in range(len(fitting)) if i not in chosen),
+                   key=lambda i: abs(axis(fitting[i]) - target))
+        chosen.append(best)
+    return [fitting[i] for i in sorted(chosen)]
+
+
+def filter_candidates(cands: list[Candidate], only: list[str] | None,
+                      exclude: list[str] | None) -> list[Candidate]:
+    """``--only`` / ``--exclude`` で候補を絞る。**名前の一致であって品質ではない**.
+
+    ``--only 'UD-Q*_K_*'`` のようなグロブを、ラベルとファイル名の両方に当てる。
+    大文字小文字は無視する。
+
+    このツールは「名前はビット幅について嘘をつく」と言っている側なので、
+    ここで絞ったものを「良いもの」と呼ばない。**手で候補を減らすための道具**
+    であって、品質の判断ではない。中身で絞りたいなら ``--min-bpw`` を使う。
+    """
+    def hit(cand: Candidate, patterns: list[str]) -> bool:
+        names = [cand.label.lower(), *(f.rsplit("/", 1)[-1].lower()
+                                       for f in cand.files)]
+        return any(fnmatch.fnmatch(n, p.lower())
+                   for p in patterns for n in names)
+
+    out = list(cands)
+    if only:
+        out = [c for c in out if hit(c, only)]
+    if exclude:
+        out = [c for c in out if not hit(c, exclude)]
+    return out
 
 
 def match_pick(cands: list[Candidate], pick: str) -> list[Candidate]:
@@ -433,19 +576,21 @@ def render_table(verdicts: list[Verdict], lang: str, chosen: set[str]) -> str:
             ctx_q8 = f"{v.ctx_q8:,}" if v.ctx_q8 else t("fetch_mark_no", lang)
         if v.cand.label in chosen:
             mark = t("fetch_mark_take", lang)
-        rows.append((v.cand.label, v.cand.size_gib, ctx_f16, ctx_q8, mark))
+        bpw = f"{v.bpw:.2f}" if v.bpw else t("fetch_unknown", lang)
+        rows.append((v.cand.label, v.cand.size_gib, bpw, ctx_f16, ctx_q8, mark))
 
     # 日本語の見出しと「入らない」が混ざるので、文字数ではなく**表示幅**で詰める。
     # 見出し自身も幅に数える (en の "quantization" は中身より長い)
     first = max([*(width(r[0]) for r in rows),
                  width(t("col_quant", lang))]) + 2
     head = (pad(t("col_quant", lang), first) + pad(t("col_filesize", lang), 9, True)
+            + pad(t("col_bpw", lang), 7, True)
             + pad(t("col_maxctx_f16", lang), 16, True)
             + pad(t("col_maxctx_q8", lang), 17, True)
             + "   " + t("fetch_col_verdict", lang))
     lines = [head, "-" * width(head)]
-    for label, gib, f16, q8, mark in rows:
-        lines.append(pad(label, first) + f"{gib:>8.2f}G"
+    for label, gib, bpw, f16, q8, mark in rows:
+        lines.append(pad(label, first) + f"{gib:>8.2f}G" + pad(bpw, 7, True)
                      + pad(f16, 16, True) + pad(q8, 17, True) + "   " + mark)
     return "\n".join(lines)
 
@@ -522,6 +667,14 @@ def _build_parser() -> argparse.ArgumentParser:
                     help=t("help_top", DEFAULT_LANG) + f" (default {DEFAULT_TOP})")
     ap.add_argument("--min-ctx", type=int, default=DEFAULT_MIN_CTX, dest="min_ctx",
                     help=t("help_min_ctx", DEFAULT_LANG) + f" (default {DEFAULT_MIN_CTX})")
+    ap.add_argument("--min-bpw", type=float, default=None, dest="min_bpw",
+                    help=t("help_min_bpw", DEFAULT_LANG))
+    ap.add_argument("--spread", action="store_true",
+                    help=t("help_spread", DEFAULT_LANG))
+    ap.add_argument("--only", action="append", default=None,
+                    help=t("help_only", DEFAULT_LANG))
+    ap.add_argument("--exclude", action="append", default=None,
+                    help=t("help_exclude", DEFAULT_LANG))
     ap.add_argument("--dir", default=None, dest="models_dir",
                     help=t("help_dir", DEFAULT_LANG))
     ap.add_argument("--revision", default="main", help=t("help_revision", DEFAULT_LANG))
@@ -557,18 +710,31 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _probe_targets(body: list[Candidate], mode: str,
                    picked: list[Candidate]) -> list[Candidate]:
-    """ヘッダを読む本数を決める。既定は**代表1本**."""
+    """ヘッダを読む順番を決める。既定は**代表1本**だが、候補は順に並べる.
+
+    代表は**大きいほうから**試す。中途半端なファイル (draft、壊れかけ、
+    置き忘れ) はたいてい小さいので、小さいほうから選ぶと真っ先にそれを掴む。
+    実際に掴んだ (MTP の 1.28 GiB を 27B 本体の代表にしていた)。
+    """
     if mode == "none" or not body:
         return []
     if mode == "all":
         return body
-    # --pick が付いているならその1本を読む。判定したいのはそれなので
-    return [picked[0]] if picked else [body[0]]
+    if picked:
+        # --pick が付いているならその1本。判定したいのはそれなので
+        return [picked[0], *sorted(body, key=lambda c: c.size_bytes, reverse=True)]
+    return sorted(body, key=lambda c: c.size_bytes, reverse=True)
 
 
 def _load_records(repo: str, revision: str, targets: list[Candidate],
-                  lang: str) -> tuple[dict[str, dict], int]:
-    """対象のヘッダを読む。戻り値は ``({ラベル: rec}, 転送バイト数)``."""
+                  lang: str, first_valid_only: bool = False,
+                  ) -> tuple[dict[str, dict], int]:
+    """対象のヘッダを読む。戻り値は ``({ラベル: rec}, 転送バイト数)``.
+
+    ``first_valid_only`` は「代表を1本決める」モード。**本体に見えないものは
+    採らずに次を試す。**ここで検証しないと、リポジトリに紛れている別物の
+    KV/token が全行に当たる。
+    """
     recs: dict[str, dict] = {}
     transferred = 0
     for cand in targets:
@@ -580,8 +746,15 @@ def _load_records(repo: str, revision: str, targets: list[Candidate],
                             file=cand.files[0], err=exc), file=sys.stderr)
             continue
         transferred += used
-        recs[cand.label] = record_from_header(
-            header, cand.files[0], cand.size_bytes, url)
+        rec = record_from_header(header, cand.files[0], cand.size_bytes, url)
+        if first_valid_only and not looks_like_the_main_model(rec):
+            print("!! " + t("fetch_not_the_model", lang, file=cand.files[0],
+                            n=rec["n_tensors"], blocks=rec.get("block_count") or 0),
+                  file=sys.stderr)
+            continue
+        recs[cand.label] = rec
+        if first_valid_only:
+            break
     return recs, transferred
 
 
@@ -597,7 +770,7 @@ def _selection(args, body: list[Candidate], verdicts: list[Verdict],
                        names=", ".join(c.label for c in body)))
         return hits
     if args.fit:
-        chosen = choose(verdicts, max(1, args.top))
+        chosen = choose(verdicts, max(1, args.top), args.spread, args.min_bpw)
         if not chosen:
             return []
         return [v.cand for v in chosen]
@@ -659,17 +832,34 @@ def main() -> int:
     except (OSError, ValueError) as exc:
         sys.exit(t("fetch_repo_failed", lang, repo=args.repo, err=exc))
 
-    body, projs = group_files(info.get("siblings") or [])
+    body, projs, extras = group_files(info.get("siblings") or [])
     if not body:
         sys.exit(t("fetch_no_gguf", lang, repo=args.repo))
 
+    if args.only or args.exclude:
+        kept = filter_candidates(body, args.only, args.exclude)
+        dropped = len(body) - len(kept)
+        if not kept:
+            sys.exit(t("fetch_filter_empty", lang,
+                       patterns=", ".join(args.only or args.exclude or []),
+                       names=", ".join(c.label for c in body)))
+        print(t("fetch_filtered", lang, dropped=dropped, kept=len(kept)))
+        body = kept
+
     picked = match_pick(body, args.pick) if args.pick else []
     targets = _probe_targets(body, args.probe, picked)
-    recs, transferred = _load_records(args.repo, args.revision, targets, lang)
+    recs, transferred = _load_records(args.repo, args.revision, targets, lang,
+                                      first_valid_only=args.probe == "one")
 
     #: ヘッダを1本しか読んでいないときは、その1本を全部に当てる。
     #: **どの1本から来た数字かは必ず出力に書く**
     shared = next(iter(recs.values())) if recs else None
+    # 較正値が別のモデルで測ったものなら、**表を出す前に**言う。
+    # 数字はそれらしく出てしまうので、出てから気づく手立てが無い
+    if shared is not None:
+        mismatch = calibration_mismatch(shared, cfg, lang)
+        if mismatch:
+            print(mismatch, file=sys.stderr)
     verdicts: list[Verdict] = []
     for cand in body:
         rec = recs.get(cand.label)
@@ -698,6 +888,7 @@ def main() -> int:
                 {"label": v.cand.label, "files": list(v.cand.files),
                  "size_bytes": v.cand.size_bytes, "fits": v.fits,
                  "basis": v.reason, "kv": v.kv_mode,
+                 "bpw": round(v.bpw, 3) if v.bpw else None,
                  "max_ctx_f16": v.ctx_f16, "max_ctx_q8_0": v.ctx_q8}
                 for v in sorted(verdicts, key=lambda x: x.cand.size_bytes)
             ],
@@ -726,6 +917,10 @@ def main() -> int:
     if projs:
         print(t("fetch_mmproj_found", lang, n=len(projs),
                 gib=projs[0].size_gib, name=projs[0].files[0]))
+    if extras:
+        # サブディレクトリの GGUF は本体ではない。**黙って捨てない**
+        print(t("fetch_extras_skipped", lang, n=len(extras),
+                names=", ".join(c.files[0] for c in extras[:3])))
 
     if selected is None:
         print()

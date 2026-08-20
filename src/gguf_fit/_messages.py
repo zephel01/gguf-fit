@@ -627,6 +627,67 @@ MESSAGES: dict[str, dict[str, str]] = {
         "en": "downloading {n} file(s), {gib:.2f} GiB total:",
         "ja": "落とすもの: {n} ファイル / 合計 {gib:.2f} GiB",
     },
+    "warn_calibration_model": {
+        "en": "!! the calibrated kv_f16_bytes ({kb:.1f} KB/token) was measured on "
+              "{file}, whose GGUF-derived KV is {there:.1f} KB/token. This model "
+              "derives {here:.1f} -- {ratio:.1f}x apart, so that calibration is not "
+              "about this model. Re-run gguf-calibrate on it, or drop kv_*_bytes "
+              "from the config to fall back to the GGUF arithmetic.",
+        "ja": "!! 設定の kv_f16_bytes ({kb:.1f} KB/token) は {file} で測った値です。"
+              "そのモデルの GGUF からの計算値は {there:.1f} KB/token、いま見ている"
+              "モデルは {here:.1f} で **{ratio:.1f}倍** 違います。**この較正値は"
+              "このモデルのものではありません。**このモデルで gguf-calibrate を"
+              "回し直すか、設定から kv_*_bytes を外して計算値に戻してください。",
+    },
+    "col_bpw": {
+        "en": "bpw",
+        "ja": "bpw",
+    },
+    "help_min_bpw": {
+        "en": "only take quantizations at or above this measured bits-per-weight",
+        "ja": "実測 bpw がこの値以上のものだけを採る",
+    },
+    "help_spread": {
+        "en": "with --fit, pick N spread across the bpw range instead of the top N",
+        "ja": "--fit で、上から N 本ではなく bpw の幅を取って N 本選ぶ",
+    },
+    "help_only": {
+        "en": "keep only candidates matching this glob (name matching, not a "
+              "quality judgement); repeatable",
+        "ja": "このグロブに当たる候補だけ残す (名前の一致であって品質の判断では"
+              "ない)。複数回指定可",
+    },
+    "help_exclude": {
+        "en": "drop candidates matching this glob; repeatable",
+        "ja": "このグロブに当たる候補を外す。複数回指定可",
+    },
+    "fetch_filtered": {
+        "en": "# --only/--exclude dropped {dropped} candidate(s); {kept} left. "
+              "That is name matching, not a judgement about quality -- use "
+              "--min-bpw to filter on what is actually in the file.",
+        "ja": "# --only/--exclude で {dropped} 本を外しました (残り {kept} 本)。"
+              "これは**名前の一致**であって品質の判断ではありません。中身で"
+              "絞るなら --min-bpw を使ってください。",
+    },
+    "fetch_filter_empty": {
+        "en": "--only/--exclude ({patterns}) left nothing. Available: {names}",
+        "ja": "--only/--exclude ({patterns}) で候補が空になりました。あるのは: {names}",
+    },
+    "fetch_not_the_model": {
+        "en": "{file} does not look like the main model ({n} tensors for {blocks} "
+              "blocks), so its KV figure was not borrowed for the other rows. "
+              "Trying the next candidate.",
+        "ja": "{file} は本体に見えないので ({blocks}層に対してテンソル {n}本)、"
+              "KV の数字を他の行に流用しませんでした。次の候補を試します。",
+    },
+    "fetch_extras_skipped": {
+        "en": "# {n} GGUF file(s) live in subdirectories and are not treated as "
+              "candidates ({names}). Those are extras (MTP drafts, imatrix data), "
+              "not the model. Name one with --pick if you actually want it.",
+        "ja": "# サブディレクトリにある GGUF {n}本は候補にしていません ({names})。"
+              "MTP の draft や imatrix など**本体ではないもの**です。要るなら "
+              "--pick で名指ししてください。",
+    },
     "fetch_inside_repo": {
         "en": "!! {dest} is inside the git working tree at {root}. Models dropped in "
               "a source checkout get forgotten -- and if .gitignore covers *.gguf, "

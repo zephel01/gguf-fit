@@ -330,9 +330,26 @@ def render_fits(fits: list[Fit], points: list[Point] | None = None) -> str:
 #: この行より下に手で何かを足さないこと。
 BLOCK_MARKER = "# --- calibrated on this machine (gguf-calibrate) ---"
 
+#: 較正ブロックが持つキー。**再実行で差し替える対象**。ここに足し忘れると、
+#: 2回目の --write-config で同じキーが2つ並んで TOML が壊れる
+_CALIBRATED_KEYS = ("kv_f16_bytes", "kv_q8_bytes",
+                    "kv_measured_on", "kv_derived_f16_bytes")
 
-def render_toml_fragment(fits: list[Fit]) -> str:
-    """``gguf-fit.toml`` に貼れる形。**測った事実として書く**."""
+
+def render_toml_fragment(fits: list[Fit], measured_on: str | None = None,
+                         derived_f16: float | None = None) -> str:
+    """``gguf-fit.toml`` に貼れる形。**測った事実として書く**.
+
+    ``measured_on`` / ``derived_f16`` は「**どのモデルで測ったか**」の記録。
+    ``kv_f16_bytes`` は KB/token の値で、これは**層構造で決まるモデル固有の
+    数字**なのに、設定ファイルに書くと以降すべてのモデルに当たる。実際に
+    起きた: Qwen3.8-27B で測った 69.1 KB/token が、KV の単価が 22.0 KB/token
+    しかない Ornith-1.5-35B の計画にも使われ、最大 ctx を3倍近く低く出した。
+
+    そこで、測ったモデルの**GGUF からの計算値**も一緒に書いておく。
+    ``gguf-plan`` / ``gguf-fetch`` は、いま見ているモデルの計算値がこれと
+    大きく違えば「その較正値はこのモデルのものではない」と言える。
+    """
     lines = [BLOCK_MARKER,
              "# Measured after one request, not derived. Re-run after changing",
              "# llama.cpp, the backend, or the launch flags."]
@@ -341,6 +358,14 @@ def render_toml_fragment(fits: list[Fit]) -> str:
         lines.append(f"{key} = {f.bytes_per_token:.0f}"
                      f"   # {f.bytes_per_token / 1024:.1f} KB/token, "
                      f"{f.n_points} points")
+    if measured_on:
+        lines.append(f'kv_measured_on = "{measured_on}"'
+                     "   # これらの値はこのモデルのものです")
+    if derived_f16:
+        lines.append(f"kv_derived_f16_bytes = {derived_f16:.0f}"
+                     f"   # そのモデルの GGUF からの計算値 "
+                     f"({derived_f16 / 1024:.1f} KB/token)。"
+                     "別モデルに当たっていないかの照合用")
     if fits:
         oh = sum(f.intercept_gib for f in fits) / len(fits)
         lines.append(f"# intercept was {oh:.2f} GiB "
@@ -364,10 +389,10 @@ def strip_calibrated_block(text: str) -> str:
         if skipping:
             # ブロックの中身はコメントと kv_*_bytes だけ。他が来たら抜ける
             if (not bare or bare.startswith("#")
-                    or bare.startswith(("kv_f16_bytes", "kv_q8_bytes"))):
+                    or bare.startswith(_CALIBRATED_KEYS)):
                 continue
             skipping = False
-        if bare.startswith(("kv_f16_bytes", "kv_q8_bytes")):
+        if bare.startswith(_CALIBRATED_KEYS):
             continue
         out.append(line)
     while out and not out[-1].strip():
@@ -375,7 +400,26 @@ def strip_calibrated_block(text: str) -> str:
     return "\n".join(out)
 
 
-def write_config(fits: list[Fit], path: Path) -> bool:
+def derived_f16_bytes(model_path: str) -> tuple[str, float] | None:
+    """測ったモデルの「GGUF からの計算値」を読む。取れなければ ``None``.
+
+    較正値が**どのモデルのものか**を後から照合するために書き残す。
+    ここで失敗しても較正そのものは成立するので、黙って諦めてよい
+    （書けるものだけ書く）。
+    """
+    try:
+        from .probe import probe  # noqa: PLC0415 - 書き出すときだけ要る
+
+        rec = probe(Path(model_path))
+        per_token = (rec.get("kv_cache") or {}).get("bytes_per_token_f16")
+        if not per_token:
+            return None
+        return Path(model_path).name, float(per_token)
+    except Exception:  # noqa: BLE001 - 記録が取れなくても較正は成立する
+        return None
+
+
+def write_config(fits: list[Fit], path: Path, model_path: str | None = None) -> bool:
     """較正結果を設定ファイルに書く。新規作成したら True.
 
     **書く前に TOML として成立することを確かめる。**壊れたファイルを置いて
@@ -384,7 +428,8 @@ def write_config(fits: list[Fit], path: Path) -> bool:
     """
     existed = path.is_file()
     head = strip_calibrated_block(path.read_text(encoding="utf-8")) if existed else ""
-    body = render_toml_fragment(fits)
+    origin = derived_f16_bytes(model_path) if model_path else None
+    body = render_toml_fragment(fits, *(origin or (None, None)))
     text = f"{head}\n\n{body}" if head else body
 
     tomllib.loads(text)          # 壊れていればここで止まる
@@ -509,7 +554,7 @@ def main() -> int:
     target = Path(args.write_config) if args.write_config else (
         cfg_path or Path("gguf-fit.toml"))
     try:
-        created = write_config(fits, target)
+        created = write_config(fits, target, args.model)
     except (OSError, tomllib.TOMLDecodeError) as e:
         sys.exit(f"could not write {target}: {e}")
     print(f"[{'created' if created else 'updated'}] {target}")
