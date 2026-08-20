@@ -297,8 +297,20 @@ BF16             66.19G              no               no   no
   ships several). `--mmproj all` / `--mmproj none`.
 * **Sharded GGUFs.** `-00001-of-00003` files are grouped into one candidate and their sizes
   summed. Counted separately they would look like three small models that all fit.
-* **GGUFs in subdirectories are not candidates.** `MTP/`, `imatrix/` and friends hold
-  things that are not the model. Learned the hard way — see [the bug list](#before-you-simplify-something).
+* **GGUFs in subdirectories are not candidates — but they are still reachable.** `MTP/`,
+  `imatrix/` and friends hold things that are not the model, so they stay out of the fit
+  table (treating one as the representative throws the KV rate off by 17× — see
+  [the bug list](#before-you-simplify-something)). A draft/MTP file is nonetheless used
+  *together with* the model, and the model alone won't do.
+
+  ```bash
+  gguf-fetch <repo> --fit --extras mtp    # bring the draft/MTP file along
+  gguf-fetch <repo> --fit --extras all    # everything in the subdirectories
+  gguf-fetch <repo> --pick mtp            # just that one, by name
+  ```
+
+  The default is `none` because **what those files are for is not something this tool can
+  read.** Their existence is always reported; asking for them is your call.
 * **Before it writes anything** it checks free disk space, prints the exact `hf download`
   command, and asks. `--dry-run` prints and stops; `-y` skips the question.
 

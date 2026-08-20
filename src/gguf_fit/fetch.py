@@ -127,6 +127,10 @@ QUANT_RE = re.compile(
 #: ビジョン投影（mmproj）。本体とは別枠で扱う
 MMPROJ_RE = re.compile(r"(^|/)mmproj", re.IGNORECASE)
 
+#: 投機デコード用の draft / MTP ファイル。本体と**組にして**使うもの。
+#: 実物: unsloth の ``MTP/mtp-Qwen3.8-27B-Q4_0.gguf``
+MTP_FILE_RE = re.compile(r"(^|[/\-_])(mtp|draft)", re.IGNORECASE)
+
 
 # --------------------------------------------------------------------------
 # ファイル名の解釈（純粋。ネットワークに触らない）
@@ -268,6 +272,27 @@ def pick_mmproj(projs: list[Candidate], mode: str) -> list[Candidate]:
     if mode == "all":
         return list(projs)
     return [projs[0]]
+
+
+def pick_extras(extras: list[Candidate], mode: str) -> list[Candidate]:
+    """サブディレクトリのファイルをどれだけ付けるか。既定は**付けない**.
+
+    ``MTP/`` や ``imatrix/`` に入っているものは**本体ではない**ので、載るか
+    どうかの判定には出さない（代表に選ぶと KV の単価が 17倍ずれる）。
+    ただし「要らない」わけではない:
+
+      * ``MTP/mtp-*.gguf`` は投機デコードで本体と**組にして**使うもの。
+        本体だけ落としても使えないし、あとから気づいて取りに戻ることになる
+      * ``imatrix/`` は自分で量子化し直すときに要る
+
+    既定を ``none`` にしてあるのは、**何に使うファイルかはこちらには
+    分からない**から。要ると分かっている人が ``--extras mtp`` と言う。
+    """
+    if mode == "none" or not extras:
+        return []
+    if mode == "all":
+        return list(extras)
+    return [c for c in extras if MTP_FILE_RE.search(c.files[0])]
 
 
 # --------------------------------------------------------------------------
@@ -680,6 +705,8 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--revision", default="main", help=t("help_revision", DEFAULT_LANG))
     ap.add_argument("--mmproj", choices=["auto", "all", "none"], default="auto",
                     help=t("help_mmproj", DEFAULT_LANG))
+    ap.add_argument("--extras", choices=["none", "mtp", "all"], default="none",
+                    help=t("help_extras", DEFAULT_LANG))
     ap.add_argument("--probe", choices=["one", "all", "none"], default="one",
                     help=t("help_probe_mode", DEFAULT_LANG))
     ap.add_argument("--kv", choices=["f16", "q8_0", "auto"], default="auto",
@@ -759,12 +786,16 @@ def _load_records(repo: str, revision: str, targets: list[Candidate],
 
 
 def _selection(args, body: list[Candidate], verdicts: list[Verdict],
-               lang: str) -> list[Candidate] | None:
+               lang: str, extras: list[Candidate] | None = None,
+               ) -> list[Candidate] | None:
     """3つのモードから、落とす候補を決める。``None`` は「まだ決めない」."""
     if args.all_:
         return list(body)
     if args.pick:
-        hits = match_pick(body, args.pick)
+        # **--pick は extras も探す。**候補表に出ていないものを名指しで取りたい
+        # ことがある (MTP の draft など)。ここを body だけにしていたので、
+        # 「要るなら --pick で」という案内が嘘になっていた
+        hits = match_pick(body + list(extras or []), args.pick)
         if not hits:
             sys.exit(t("fetch_pick_none", lang, pick=args.pick,
                        names=", ".join(c.label for c in body)))
@@ -868,10 +899,13 @@ def main() -> int:
         verdicts.append(evaluate(cand, rec, vram, overhead, args.kv,
                                  args.min_ctx, KvRates.from_config(cfg)))
 
-    selected = _selection(args, body, verdicts, lang)
+    selected = _selection(args, body, verdicts, lang, extras)
     files: list[str] = []
     if selected is not None:
-        chosen_all = selected + pick_mmproj(projs, args.mmproj)
+        # --pick で extras を名指ししたぶんを二重に足さない
+        wanted_extras = [c for c in pick_extras(extras, args.extras)
+                         if c not in selected]
+        chosen_all = selected + pick_mmproj(projs, args.mmproj) + wanted_extras
         files = [f for c in chosen_all for f in c.files]
         total = sum(c.size_bytes for c in chosen_all)
     else:
@@ -894,6 +928,10 @@ def main() -> int:
             ],
             "mmproj": [{"label": c.label, "files": list(c.files),
                         "size_bytes": c.size_bytes} for c in projs],
+            "extras": [{"label": c.label, "files": list(c.files),
+                        "size_bytes": c.size_bytes,
+                        "mtp": bool(MTP_FILE_RE.search(c.files[0]))}
+                       for c in extras],
             "selected": files,
             "selected_bytes": total,
         }, ensure_ascii=False, indent=2))
@@ -918,8 +956,12 @@ def main() -> int:
         print(t("fetch_mmproj_found", lang, n=len(projs),
                 gib=projs[0].size_gib, name=projs[0].files[0]))
     if extras:
-        # サブディレクトリの GGUF は本体ではない。**黙って捨てない**
-        print(t("fetch_extras_skipped", lang, n=len(extras),
+        # サブディレクトリの GGUF は本体ではない。判定には出さないが、
+        # **黙って捨てない**。要ると分かっている人が取れるように言う
+        taken = pick_extras(extras, args.extras)
+        gib = sum(c.size_bytes for c in taken) / GIB
+        key = "fetch_extras_taken" if taken else "fetch_extras_available"
+        print(t(key, lang, n=len(extras), taken=len(taken), gib=gib,
                 names=", ".join(c.files[0] for c in extras[:3])))
 
     if selected is None:

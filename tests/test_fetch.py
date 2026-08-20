@@ -199,6 +199,29 @@ def test_a_tensor_poor_file_is_not_accepted_as_the_representative():
     assert not fetch.looks_like_the_main_model({**full, "kv_cache": None})
 
 
+def test_extras_are_excluded_from_judging_but_reachable():
+    """候補にしない = 要らない、ではない。draft は本体と組にして使う."""
+    _body, _projs, extras = fetch.group_files([
+        *SIBLINGS, {"rfilename": "imatrix/imatrix.gguf", "size": 1000},
+    ])
+    assert fetch.pick_extras(extras, "none") == []
+    # mtp は draft/MTP と読めるものだけ。imatrix は付けない
+    assert [c.files[0] for c in fetch.pick_extras(extras, "mtp")] == \
+        ["MTP/mtp-M-Q4_0.gguf"]
+    assert len(fetch.pick_extras(extras, "all")) == 2
+
+
+@pytest.mark.parametrize("name", [
+    "MTP/mtp-M-Q4_0.gguf", "M-draft-Q4_0.gguf", "drafts/M.gguf",
+])
+def test_mtp_file_is_recognised(name):
+    assert fetch.MTP_FILE_RE.search(name)
+
+
+def test_imatrix_is_not_mistaken_for_a_draft():
+    assert not fetch.MTP_FILE_RE.search("imatrix/imatrix.gguf")
+
+
 def test_group_files_merges_shards_and_splits_mmproj():
     body, projs, _extra = fetch.group_files(SIBLINGS)
     assert [c.label for c in body] == ["Q4_K_M", "Q8_0", "Q4_0"]
@@ -449,12 +472,14 @@ def hf_server(monkeypatch):
         "M-Q4_K_M.gguf": gguf,
         "M-Q8_0.gguf": gguf,
         "mmproj-M-F16.gguf": gguf,
+        "mtp-M-Q4_0.gguf": gguf,
         "ignore-range.gguf": gguf,
     }
     _Handler.api = {"siblings": [
         {"rfilename": "M-Q4_K_M.gguf", "size": 20_000_000_000},
         {"rfilename": "M-Q8_0.gguf", "size": 35_000_000_000},
         {"rfilename": "mmproj-M-F16.gguf", "size": 900_000_000},
+        {"rfilename": "MTP/mtp-M-Q4_0.gguf", "size": 1_280_000_000},
         {"rfilename": "README.md", "size": 10},
     ]}
     server = HTTPServer(("127.0.0.1", 0), _Handler)
@@ -659,6 +684,34 @@ def test_pick_downloads_only_that_one(hf_server, monkeypatch, tmp_path, capsys):
     assert fetch.main() == 0
     out = json.loads(capsys.readouterr().out)
     assert out["selected"] == ["M-Q8_0.gguf"]
+
+
+def test_extras_mtp_rides_along_with_the_model(hf_server, monkeypatch,
+                                               tmp_path, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(fetch._hardware, "detect", lambda _b: _no_gpu_machine())
+    monkeypatch.setattr("sys.argv", [
+        "gguf-fetch", "org/repo", "--vram", "24", "--fit", "--top", "1",
+        "--mmproj", "none", "--extras", "mtp", "--json"])
+    assert fetch.main() == 0
+    out = json.loads(capsys.readouterr().out)
+    assert "MTP/mtp-M-Q4_0.gguf" in out["selected"]
+    # 判定の表には出さない。本体ではないので「載るか」の話に混ぜない
+    assert "Q4_0" not in [c["label"] for c in out["candidates"]
+                          if c["files"] == ["MTP/mtp-M-Q4_0.gguf"]]
+    assert any(e["mtp"] for e in out["extras"])
+
+
+def test_pick_can_name_a_file_that_is_not_a_candidate(hf_server, monkeypatch,
+                                                      tmp_path, capsys):
+    """「要るなら --pick で名指しして」と案内する以上、当たらないと嘘になる."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(fetch._hardware, "detect", lambda _b: _no_gpu_machine())
+    monkeypatch.setattr("sys.argv", [
+        "gguf-fetch", "org/repo", "--pick", "mtp", "--mmproj", "none", "--json"])
+    assert fetch.main() == 0
+    assert json.loads(capsys.readouterr().out)["selected"] == \
+        ["MTP/mtp-M-Q4_0.gguf"]
 
 
 def test_all_takes_every_gguf_but_not_the_readme(hf_server, monkeypatch,

@@ -680,13 +680,27 @@ MESSAGES: dict[str, dict[str, str]] = {
         "ja": "{file} は本体に見えないので ({blocks}層に対してテンソル {n}本)、"
               "KV の数字を他の行に流用しませんでした。次の候補を試します。",
     },
-    "fetch_extras_skipped": {
-        "en": "# {n} GGUF file(s) live in subdirectories and are not treated as "
-              "candidates ({names}). Those are extras (MTP drafts, imatrix data), "
-              "not the model. Name one with --pick if you actually want it.",
-        "ja": "# サブディレクトリにある GGUF {n}本は候補にしていません ({names})。"
-              "MTP の draft や imatrix など**本体ではないもの**です。要るなら "
-              "--pick で名指ししてください。",
+    "fetch_extras_available": {
+        "en": "# {n} GGUF file(s) live in subdirectories and are not judged as "
+              "candidates ({names}) -- they are not the model. A draft/MTP file is "
+              "used *together with* the model, though: --extras mtp takes it, "
+              "--extras all takes them all, or name one with --pick.",
+        "ja": "# サブディレクトリの GGUF {n}本は候補にしていません ({names})。"
+              "**本体ではない**ためです。ただし draft/MTP は本体と**組にして**"
+              "使うものなので、要るなら --extras mtp、全部なら --extras all、"
+              "個別なら --pick で名指しできます。",
+    },
+    "fetch_extras_taken": {
+        "en": "# taking {taken} of {n} subdirectory file(s), {gib:.2f} GiB. They are "
+              "not judged for fit -- they are not the model, and pair with it.",
+        "ja": "# サブディレクトリのファイルを {n}本中 {taken}本 ({gib:.2f} GiB) "
+              "付けます。載るかどうかの判定には出していません — 本体ではなく、"
+              "本体と組にして使うものだからです。",
+    },
+    "help_extras": {
+        "en": "subdirectory GGUFs (MTP drafts, imatrix): none (default), mtp, or all",
+        "ja": "サブディレクトリの GGUF (MTP の draft、imatrix): "
+              "none (既定) / mtp / all",
     },
     "fetch_inside_repo": {
         "en": "!! {dest} is inside the git working tree at {root}. Models dropped in "
