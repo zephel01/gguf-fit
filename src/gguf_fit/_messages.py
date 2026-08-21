@@ -584,16 +584,16 @@ MESSAGES: dict[str, dict[str, str]] = {
               "/ ctx {min_ctx:,} 以上で「載る」",
     },
     "fetch_kv_source": {
-        "en": "# the KV figures come from the header of {files} ({mb:.1f} MB "
+        "en": "# the KV figures come from the header of {files} ({mib:.1f} MiB "
               "transferred). Quantizations of the same model share the layer "
               "structure, so the same KV/token applies to every row.",
-        "ja": "# KV の数字は {files} のヘッダから読みました ({mb:.1f} MB 転送)。"
+        "ja": "# KV の数字は {files} のヘッダから読みました ({mib:.1f} MiB 転送)。"
               "同じモデルの量子化違いは層構造が同じなので、KV/token は全行に"
               "そのまま当てはまります。",
     },
     "fetch_kv_source_all": {
-        "en": "# read the header of every candidate: {files} ({mb:.1f} MB transferred)",
-        "ja": "# 候補すべてのヘッダを読みました: {files} ({mb:.1f} MB 転送)",
+        "en": "# read the header of every candidate: {files} ({mib:.1f} MiB transferred)",
+        "ja": "# 候補すべてのヘッダを読みました: {files} ({mib:.1f} MiB 転送)",
     },
     "fetch_size_only": {
         "en": "# no header was read (--probe none), so this is file size against the "
@@ -679,6 +679,14 @@ MESSAGES: dict[str, dict[str, str]] = {
               "Trying the next candidate.",
         "ja": "{file} は本体に見えないので ({blocks}層に対してテンソル {n}本)、"
               "KV の数字を他の行に流用しませんでした。次の候補を試します。",
+    },
+    "fetch_not_weights": {
+        "en": "# {n} root-level file(s) are too small to be weights at this parameter "
+              "count and were dropped from the candidates ({names}). imatrix data and "
+              "the like. --pick still reaches them by name.",
+        "ja": "# ルートにある {n}本は、このパラメータ数に対して重みとしては"
+              "小さすぎるので候補から外しました ({names})。imatrix などです。"
+              "--pick で名指しすれば取れます。",
     },
     "fetch_extras_available": {
         "en": "# {n} GGUF file(s) live in subdirectories and are not judged as "

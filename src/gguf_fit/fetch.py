@@ -13,11 +13,11 @@
 このコマンドは順番を入れ替える。
 
   1. HF の API でファイル一覧とサイズを取る（**ここは数 KB**）
-  2. 代表1本の GGUF ヘッダだけを HTTP Range で取る（**約 16 MB**）
+  2. 代表1本の GGUF ヘッダだけを HTTP Range で取る（**実測 12.0 MiB**）
   3. `gguf-plan` と同じ式で「載るか / 最大 ctx はいくつか」を出す
   4. 決まったものだけを ``hf download`` に渡す
 
-実測: Ornith-1.5-35B（5量子化・合計 172 GB）の判定に要した転送は **11 MB**。
+実測: Ornith-1.5-35B（5量子化・合計 172 GB）の判定に要した転送は **12.0 MiB**。
 
 --- なぜ代表1本でいいのか -------------------------------------------------
 
@@ -73,7 +73,7 @@ from .probe import summarize_tensors
 #: （``huggingface_hub`` 自身も同じ名前を見る）
 DEFAULT_ENDPOINT = "https://huggingface.co"
 
-#: ヘッダ取得の最初の1回。実測 Ornith-1.5-35B のヘッダは 10.99 MB だったので、
+#: ヘッダ取得の最初の1回。実測 Ornith-1.5-35B のヘッダは 10.48 MiB だったので、
 #: 1回で当たるところに置いてある。足りなければ倍にして取り直す
 HEADER_FIRST_BYTES = 12 * 1024 * 1024
 #: ヘッダ取得の上限。ここを超えたら「ヘッダが異常に大きい」として諦める
@@ -451,6 +451,27 @@ def bits_per_weight(size_bytes: int, n_params: int) -> float | None:
     if not n_params:
         return None
     return size_bytes * 8 / n_params
+
+
+#: 量子化として成立しうる bpw の範囲。実在する一番軽い量子化でも
+#: IQ1_S が 1.81 bpw、一番重い F32 で 32.0。**桁で外れているものは重みではない**。
+#: 実物で踏んだ: unsloth/Qwen3.8-27B-GGUF のルートに置いてある
+#: ``imatrix_unsloth.gguf`` (13 MiB) は 27B のパラメータ数に対して 0.004 bpw。
+#: サブディレクトリではなくルートにあるので、置き場所では弾けない。
+PLAUSIBLE_BPW = (0.5, 33.0)
+
+
+def implausible_as_model(size_bytes: int, n_params: int) -> bool:
+    """このサイズで「その parameter 数のモデル」はありえないか.
+
+    ``imatrix`` や語彙だけのファイルを量子化と並べないための線。
+    **名前ではなく数字で弾く。**パラメータ数が読めていなければ判断しない
+    （分からないものを「違う」と言わない）。
+    """
+    bpw = bits_per_weight(size_bytes, n_params)
+    if bpw is None:
+        return False
+    return not PLAUSIBLE_BPW[0] <= bpw <= PLAUSIBLE_BPW[1]
 
 
 class Verdict(NamedTuple):
@@ -885,6 +906,21 @@ def main() -> int:
     #: ヘッダを1本しか読んでいないときは、その1本を全部に当てる。
     #: **どの1本から来た数字かは必ず出力に書く**
     shared = next(iter(recs.values())) if recs else None
+
+    # **ルートに置いてある非モデルを候補から外す。**置き場所では弾けないので
+    # bpw で見る。実物: unsloth の imatrix_unsloth.gguf (13 MiB) が
+    # --spread の下端として選ばれていた
+    n_params = (shared or {}).get("n_params") or 0
+    if n_params:
+        not_models = [c for c in body if implausible_as_model(c.size_bytes, n_params)]
+        if not_models:
+            body = [c for c in body if c not in not_models]
+            extras = extras + not_models
+            print(t("fetch_not_weights", lang, n=len(not_models),
+                    names=", ".join(c.files[0] for c in not_models)),
+                  file=sys.stderr)
+        if not body:
+            sys.exit(t("fetch_no_gguf", lang, repo=args.repo))
     # 較正値が別のモデルで測ったものなら、**表を出す前に**言う。
     # 数字はそれらしく出てしまうので、出てから気づく手立てが無い
     if shared is not None:
@@ -949,7 +985,7 @@ def main() -> int:
     if transferred:
         source = ", ".join(sorted(recs))
         print(t("fetch_kv_source" if args.probe == "one" else "fetch_kv_source_all",
-                lang, files=source, mb=transferred / (1024 * 1024)))
+                lang, files=source, mib=transferred / (1024 * 1024)))
     else:
         print(t("fetch_size_only", lang))
     if projs:

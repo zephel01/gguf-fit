@@ -39,17 +39,27 @@ def _gstr(text: str) -> bytes:
 
 
 def build_gguf(meta: list[tuple[str, int, bytes]],
-               tensors: list[tuple[str, int]], trailer: int = 4096) -> bytes:
-    """テストで使う最小の GGUF。``trailer`` は「本体のつもり」の埋め草."""
+               tensors: list[tuple[str, int]], trailer: int = 4096,
+               dims: tuple[int, int] = (8, 8)) -> bytes:
+    """テストで使う最小の GGUF。``trailer`` は「本体のつもり」の埋め草.
+
+    ``dims`` はテンソルの形。**パラメータ数がここで決まる**ので、bpw を見る
+    テストでは実物に近い大きさ (BIG_DIMS) を渡すこと。
+    """
     out = [b"GGUF", struct.pack("<I", 3),
            struct.pack("<Q", len(tensors)), struct.pack("<Q", len(meta))]
     for key, vtype, payload in meta:
         out += [_gstr(key), struct.pack("<I", vtype), payload]
     for name, code in tensors:
         out += [_gstr(name), struct.pack("<I", 2),
-                struct.pack("<QQ", 8, 8), struct.pack("<I", code),
+                struct.pack("<QQ", *dims), struct.pack("<I", code),
                 struct.pack("<Q", 0)]
     return b"".join(out) + b"\0" * trailer
+
+
+#: 11本のテンソルで合計 22.5B パラメータ。ファイルサイズ 20〜35 GB に対して
+#: bpw が 7〜12 に落ちるので、実物と同じ範囲で判定を通せる
+BIG_DIMS = (4096, 500_000)
 
 
 def _u32(value: int) -> bytes:
@@ -220,6 +230,34 @@ def test_mtp_file_is_recognised(name):
 
 def test_imatrix_is_not_mistaken_for_a_draft():
     assert not fetch.MTP_FILE_RE.search("imatrix/imatrix.gguf")
+
+
+def test_a_file_too_small_to_be_weights_is_not_a_candidate():
+    """実物: unsloth は imatrix_unsloth.gguf (13 MiB) を**ルートに**置いている.
+
+    置き場所では弾けない。27B のパラメータ数に対して 0.004 bpw なので、
+    重みではありえない。--spread の下端としてこれが選ばれていた。
+    """
+    params_27b = 27_320_000_000
+    assert fetch.implausible_as_model(13 * 1024 ** 2, params_27b)
+    # 実在する一番軽い量子化 (IQ1_S 1.81 bpw) は残す
+    assert not fetch.implausible_as_model(5_770_000_000 * 1.074, params_27b)
+    assert not fetch.implausible_as_model(50_900_000_000 * 1.074, params_27b)  # BF16
+    # パラメータ数が読めていなければ判断しない
+    assert not fetch.implausible_as_model(13 * 1024 ** 2, 0)
+
+
+def test_the_imatrix_file_never_reaches_the_download_list(
+        hf_server, monkeypatch, tmp_path, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(fetch._hardware, "detect", lambda _b: _no_gpu_machine())
+    monkeypatch.setattr("sys.argv", [
+        "gguf-fetch", "org/repo", "--vram", "40", "--fit", "--spread",
+        "--top", "3", "--mmproj", "none", "--json"])
+    assert fetch.main() == 0
+    out = json.loads(capsys.readouterr().out)
+    assert "imatrix_unsloth.gguf" not in out["selected"]
+    assert "imatrix_unsloth" not in [c["label"] for c in out["candidates"]]
 
 
 def test_group_files_merges_shards_and_splits_mmproj():
@@ -467,12 +505,13 @@ class _Handler(BaseHTTPRequestHandler):
 
 @pytest.fixture
 def hf_server(monkeypatch):
-    gguf = build_gguf(MODEL_META, MODEL_TENSORS)
+    gguf = build_gguf(MODEL_META, MODEL_TENSORS, dims=BIG_DIMS)
     _Handler.blobs = {
         "M-Q4_K_M.gguf": gguf,
         "M-Q8_0.gguf": gguf,
         "mmproj-M-F16.gguf": gguf,
         "mtp-M-Q4_0.gguf": gguf,
+        "imatrix_unsloth.gguf": gguf,
         "ignore-range.gguf": gguf,
     }
     _Handler.api = {"siblings": [
@@ -480,6 +519,9 @@ def hf_server(monkeypatch):
         {"rfilename": "M-Q8_0.gguf", "size": 35_000_000_000},
         {"rfilename": "mmproj-M-F16.gguf", "size": 900_000_000},
         {"rfilename": "MTP/mtp-M-Q4_0.gguf", "size": 1_280_000_000},
+        # 実物 (unsloth) と同じく**ルートに**置いてある imatrix。
+        # 置き場所では弾けないので bpw で弾く
+        {"rfilename": "imatrix_unsloth.gguf", "size": 13_000_000},
         {"rfilename": "README.md", "size": 10},
     ]}
     server = HTTPServer(("127.0.0.1", 0), _Handler)

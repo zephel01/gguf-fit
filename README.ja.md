@@ -10,7 +10,7 @@
 [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
-[導入](#導入) · [なぜ](#なぜ) · [分かること](#分かること) · [VRAM の見積り](#vram-の見積り) · [使い方](#使い方) · [English](README.md)
+[導入](#導入) · [なぜ](#なぜ) · [分かること](#分かること) · [VRAM の見積り](#vram-の見積り) · [使い方](#使い方) · [リファレンス](docs/README.ja.md) · [English](README.md)
 
 </div>
 
@@ -270,12 +270,12 @@ Q6_K       27.20G        入らない         入らない   入らない
 Q8_0       35.21G        入らない         入らない   入らない
 BF16       66.19G        入らない         入らない   入らない
 
-# KV の数字は Q4_K_M のヘッダから読みました (12.0 MB 転送)。同じモデルの量子化違いは
+# KV の数字は Q4_K_M のヘッダから読みました (12.0 MiB 転送)。同じモデルの量子化違いは
 # 層構造が同じなので、KV/token は全行にそのまま当てはまります。
 # ビジョン投影が 1 本あります。mmproj-Ornith-1.5-35B-BF16.gguf (0.84 GiB) を付けます。
 ```
 
-**候補 172 GB ぶんの判定に、転送は 12 MB。**
+**候補 172 GB ぶんの判定に、転送は 12.0 MiB。**
 
 * **なぜ代表1本で足りるのか。** 量子化が変えるのはテンソルの**型**であって
   **名前**ではありません。だから同じリポジトリの量子化違いは層構造が同じで、

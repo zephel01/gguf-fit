@@ -10,7 +10,7 @@
 [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
-[Install](#install) · [Why](#why) · [What it finds](#what-it-finds) · [VRAM model](#vram-model) · [Usage](#usage) · [日本語](README.ja.md)
+[Install](#install) · [Why](#why) · [What it finds](#what-it-finds) · [VRAM model](#vram-model) · [Usage](#usage) · [Reference](docs/) · [日本語](README.ja.md)
 
 </div>
 
@@ -259,12 +259,12 @@ Q6_K             27.20G              no               no   no
 Q8_0             35.21G              no               no   no
 BF16             66.19G              no               no   no
 
-# the KV figures come from the header of Q4_K_M (12.0 MB transferred). Quantizations of
+# the KV figures come from the header of Q4_K_M (12.0 MiB transferred). Quantizations of
 # the same model share the layer structure, so the same KV/token applies to every row.
 # 1 vision projector(s) found; taking mmproj-Ornith-1.5-35B-BF16.gguf (0.84 GiB).
 ```
 
-**172 GB of candidates, judged with 12 MB of transfer.**
+**172 GB of candidates, judged with 12 MiB of transfer.**
 
 * **Why one header is enough.** Quantizing changes tensor *types*, not tensor *names*. So
   every quantization in a repo has the same layer structure — the same KV bytes per token,
