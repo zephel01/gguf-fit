@@ -623,6 +623,124 @@ def hf_server(monkeypatch):
     server.shutdown()
 
 
+#: 実物 (unsloth/Qwen3.8-Flash-Next-GGUF) の分割のしかた。1本目は**メタデータ
+#: だけでテンソル0本**、重みは2本目以降に入っている。1本目だけ読むと KV層が
+#: 数えられない (block_count で代用してはいけない — README のバグ #1)
+SPLIT_SIBLINGS = [
+    {"rfilename": "UD-IQ1_S/S-UD-IQ1_S-00001-of-00003.gguf", "size": 10_900_000},
+    {"rfilename": "UD-IQ1_S/S-UD-IQ1_S-00002-of-00003.gguf", "size": 12_000_000_000},
+    {"rfilename": "UD-IQ1_S/S-UD-IQ1_S-00003-of-00003.gguf", "size": 8_000_000_000},
+]
+
+
+@pytest.fixture
+def hf_split_server(monkeypatch):
+    """メタデータ専用の先頭シャードを持つリポジトリ."""
+    half = len(MODEL_TENSORS) // 2
+    _Handler.blobs = {
+        "S-UD-IQ1_S-00001-of-00003.gguf": build_gguf(MODEL_META, [], dims=BIG_DIMS),
+        "S-UD-IQ1_S-00002-of-00003.gguf": build_gguf(
+            [], MODEL_TENSORS[:half], dims=BIG_DIMS),
+        "S-UD-IQ1_S-00003-of-00003.gguf": build_gguf(
+            [], MODEL_TENSORS[half:], dims=BIG_DIMS),
+    }
+    _Handler.api = {"siblings": list(SPLIT_SIBLINGS)}
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setenv("HF_ENDPOINT", f"http://127.0.0.1:{server.server_port}")
+    monkeypatch.setenv("HF_TOKEN", "")
+    yield server
+    server.shutdown()
+
+
+def test_metadata_only_shard_is_recognised():
+    meta_only = _ggufhdr.parse_header(build_gguf(MODEL_META, []))
+    full = _ggufhdr.parse_header(build_gguf(MODEL_META, MODEL_TENSORS))
+    assert fetch.is_metadata_only_shard(meta_only)
+    assert not fetch.is_metadata_only_shard(full)
+
+
+def test_merge_shard_headers_joins_tensors_and_adds_up_the_parameters():
+    half = len(MODEL_TENSORS) // 2
+    first = _ggufhdr.parse_header(build_gguf(MODEL_META, [], dims=BIG_DIMS))
+    second = _ggufhdr.parse_header(build_gguf([], MODEL_TENSORS[:half], dims=BIG_DIMS))
+    third = _ggufhdr.parse_header(build_gguf([], MODEL_TENSORS[half:], dims=BIG_DIMS))
+    merged = fetch.merge_shard_headers([first, second, third])
+    assert len(merged.tensors) == len(MODEL_TENSORS)
+    assert merged.n_params == second.n_params + third.n_params
+    # メタデータは持っているシャードのものが残る
+    assert merged.metadata["general.architecture"] == "testarch"
+    assert merged.metadata["testarch.block_count"] == 6
+
+
+def test_merge_shard_headers_leaves_a_single_header_alone():
+    only = _ggufhdr.parse_header(build_gguf(MODEL_META, MODEL_TENSORS))
+    assert fetch.merge_shard_headers([only]) is only
+    with pytest.raises(ValueError):
+        fetch.merge_shard_headers([])
+
+
+def test_kv_layers_are_counted_across_shards_not_taken_from_block_count(
+        hf_split_server):
+    """**これが本題。**1本目だけでは KV層が数えられない.
+
+    MODEL_TENSORS は blk.0-2 が attn_k/attn_v、blk.3-5 は attn_qkv なので、
+    6層のうち KV を持つのは**3層だけ**。block_count で代用すると倍になる。
+    """
+    body, _p, _e = fetch.group_files(SPLIT_SIBLINGS)
+    recs, transferred = fetch._load_records(
+        "org/repo", "main", body, "en", first_valid_only=True)
+    assert list(recs) == ["UD-IQ1_S"]
+    rec = recs["UD-IQ1_S"]
+    assert rec["n_tensors"] == len(MODEL_TENSORS)
+    assert rec["block_count"] == 6
+    assert rec["kv_cache"]["kv_bearing_layers"] == 3        # 6 ではない
+    assert rec["kv_cache"]["total_layers"] == 6
+    assert rec["n_params"] > 0                              # bpw が出せる
+    assert transferred > 0
+
+
+def test_a_metadata_only_shard_on_its_own_is_still_refused():
+    """分割でない単体の 0本ファイルは、これまでどおり代表にしない."""
+    header = _ggufhdr.parse_header(build_gguf(MODEL_META, []))
+    rec = fetch.record_from_header(header, "M.gguf", 20_000_000_000)
+    assert not fetch.looks_like_the_main_model(rec)
+
+
+@pytest.fixture
+def hf_unreadable_server(monkeypatch):
+    """候補が1本あるが、そのヘッダからは何も採れないリポジトリ."""
+    _Handler.blobs = {"M-Q4_K_M.gguf": build_gguf(MODEL_META, [], dims=BIG_DIMS)}
+    _Handler.api = {"siblings": [
+        {"rfilename": "M-Q4_K_M.gguf", "size": 20_000_000_000}]}
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setenv("HF_ENDPOINT", f"http://127.0.0.1:{server.server_port}")
+    monkeypatch.setenv("HF_TOKEN", "")
+    yield server
+    server.shutdown()
+
+
+def test_no_usable_header_does_not_claim_it_read_one(
+        hf_unreadable_server, monkeypatch, tmp_path, capsys):
+    """**ファイル名が空欄のまま**「ヘッダから読みました」と書いていた.
+
+    実物の出力: ``# the KV figures come from the header of  (10.4 MiB
+    transferred).`` — recs が空でも転送量があると、この行を出していた。
+    """
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(fetch._hardware, "detect", lambda _b: _no_gpu_machine())
+    monkeypatch.setattr(fetch.subprocess, "run", _never_called)
+    monkeypatch.setattr("sys.argv", [
+        "gguf-fetch", "org/repo", "--vram", "24", "--lang", "en"])
+    fetch.main()
+    out = capsys.readouterr().out
+    assert "header of  (" not in out          # 空欄のまま出さない
+    assert "no usable header" in out
+
+
 def test_read_range_refuses_a_server_that_ignores_range(hf_server):
     """ここで止めないと、21 GB を黙って受け取ることになる."""
     url = fetch.file_url("org/repo", "main", "ignore-range.gguf")

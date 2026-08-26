@@ -410,6 +410,50 @@ def fetch_header(url: str, first: int = HEADER_FIRST_BYTES,
                     f"GGUF header did not end within {limit} bytes") from exc
 
 
+def is_metadata_only_shard(header: Header) -> bool:
+    """テンソルを1本も持たないシャードか.
+
+    実物: unsloth/Qwen3.8-Flash-Next-GGUF の ``-00001-of-00003.gguf`` は
+    10.9 MB あるがテンソルは**0本**で、中身はアーキテクチャのメタデータと
+    tokenizer だけ。重みは 2本目以降に入っている。
+    """
+    return not header.tensors
+
+
+def merge_shard_headers(headers: list[Header]) -> Header:
+    """分割 GGUF の各シャードのヘッダを**1本ぶんに見えるよう**束ねる.
+
+    **純粋関数。**ネットワークには触らない。
+
+    分割 GGUF は「メタデータを持つシャード」と「テンソルを持つシャード」が
+    別々になっていることがある (実物: ``-00001-of-00003`` はメタデータ 11キー
+    でテンソル0本、``-00002`` は 595本でメタデータ0キー、``-00003`` は 629本)。
+    片方だけ見ても本体の姿にならない:
+
+      * テンソルが無いと **KV層が数えられない**。``block_count`` で代用しては
+        いけない (この実物は 48層中 KV を持つのは 12層だけ。代用すると
+        KV/token が**4倍**に出る — README のバグ #1 そのもの)
+      * ``n_params`` はシャードごとの合計なので、**足さないと bpw が出ない**
+
+    そこでテンソルは連結、``n_params`` は合算、メタデータは**持っている
+    シャードのものを採る**（先に出てきたものを優先し、後のもので埋める）。
+    ``version`` と ``header_bytes`` は先頭シャードのものを残す。
+    """
+    if not headers:
+        raise ValueError("no headers to merge")
+    if len(headers) == 1:
+        return headers[0]
+    metadata: dict[str, Any] = {}
+    for header in headers:
+        for key, value in header.metadata.items():
+            metadata.setdefault(key, value)
+    return headers[0]._replace(
+        metadata=metadata,
+        tensors=[t for header in headers for t in header.tensors],
+        n_params=sum(header.n_params for header in headers),
+    )
+
+
 # --------------------------------------------------------------------------
 # ヘッダ -> gguf-probe と同じ形のレコード
 # --------------------------------------------------------------------------
@@ -813,6 +857,11 @@ def _load_records(repo: str, revision: str, targets: list[Candidate],
     ``first_valid_only`` は「代表を1本決める」モード。**本体に見えないものは
     採らずに次を試す。**ここで検証しないと、リポジトリに紛れている別物の
     KV/token が全行に当たる。
+
+    先頭シャードが**メタデータだけでテンソルを持っていない**ときは、残りの
+    シャードのヘッダも読んで束ねる (``merge_shard_headers``)。読まないと
+    KV層が数えられず、bpw も出ない。読む量は増えるので、**増えたことは
+    出力に書く** (転送量は戻り値に乗る)。
     """
     recs: dict[str, dict] = {}
     transferred = 0
@@ -825,6 +874,26 @@ def _load_records(repo: str, revision: str, targets: list[Candidate],
                             file=cand.files[0], err=exc), file=sys.stderr)
             continue
         transferred += used
+        if is_metadata_only_shard(header) and len(cand.files) > 1:
+            rest = cand.files[1:]
+            print(t("fetch_metadata_only_shard", lang, file=cand.files[0],
+                    n=len(rest)), file=sys.stderr)
+            headers = [header]
+            failed = False
+            for name in rest:
+                try:
+                    more, more_used = fetch_header(file_url(repo, revision, name))
+                except (OSError, ValueError) as exc:
+                    print("!! " + t("fetch_header_failed", lang,
+                                    file=name, err=exc), file=sys.stderr)
+                    failed = True
+                    break
+                transferred += more_used
+                headers.append(more)
+            if failed:
+                # 1本でも欠けると KV層を数え落とす。**中途半端な数字は出さない**
+                continue
+            header = merge_shard_headers(headers)
         rec = record_from_header(header, cand.files[0], cand.size_bytes, url)
         if first_valid_only and not looks_like_the_main_model(rec):
             print("!! " + t("fetch_not_the_model", lang, file=cand.files[0],
@@ -1013,10 +1082,14 @@ def main() -> int:
     print(render_table(verdicts, lang, chosen_labels))
     print()
 
-    if transferred:
+    if transferred and recs:
         source = ", ".join(sorted(recs))
         print(t("fetch_kv_source" if args.probe == "one" else "fetch_kv_source_all",
                 lang, files=source, mib=transferred / (1024 * 1024)))
+    elif transferred:
+        # 取りに行ったが1つも使えなかった。**「ヘッダから読みました」とは
+        # 書かない。**書いていたので、ファイル名が空欄のまま出ていた
+        print(t("fetch_no_usable_header", lang, mib=transferred / (1024 * 1024)))
     else:
         print(t("fetch_size_only", lang))
     if projs:

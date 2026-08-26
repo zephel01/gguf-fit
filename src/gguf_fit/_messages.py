@@ -601,6 +601,22 @@ MESSAGES: dict[str, dict[str, str]] = {
         "ja": "# ヘッダを読んでいません (--probe none)。ファイルサイズと予算を"
               "比べただけで、**KVキャッシュのぶんは入っていません**。",
     },
+    #: ヘッダは取りに行ったのに使えるものが1つも無かったとき。転送はしたので
+    #: 量は書くが、「ヘッダから読みました」と書くと嘘になる (実際そう出ていた:
+    #: ファイル名が空欄のまま "come from the header of  (10.4 MiB transferred)")
+    "fetch_no_usable_header": {
+        "en": "# no usable header ({mib:.1f} MiB transferred), so this is file size "
+              "against the budget only. The KV cache is not counted.",
+        "ja": "# 使えるヘッダがありませんでした ({mib:.1f} MiB 転送)。ファイル"
+              "サイズと予算を比べただけで、**KVキャッシュのぶんは入っていません**。",
+    },
+    #: 先頭シャードがメタデータだけだったので、残りのシャードも読みに行くとき
+    "fetch_metadata_only_shard": {
+        "en": "# {file} carries metadata but no tensors, so the KV layers cannot be "
+              "counted from it alone. Reading the header of the other {n} shard(s).",
+        "ja": "# {file} はメタデータだけでテンソルを持っていないので、これだけでは"
+              "KV層を数えられません。残り {n} 本のシャードのヘッダも読みます。",
+    },
     "fetch_mmproj_found": {
         "en": "# {n} vision projector(s) found; taking {name} ({gib:.2f} GiB). "
               "--mmproj all / none changes this.",
