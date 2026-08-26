@@ -24,9 +24,9 @@ This project has not cut a release yet; `version` in `pyproject.toml` is still
   `--spread` takes N across the bpw range instead of the top N, `--only` /
   `--exclude` cut on name globs. On a 24-quant repo, `--fit --top 3` had been
   returning three files inside one bit tier.
-- **`--extras {none,mtp,all}`** — subdirectory GGUFs (`MTP/`, `imatrix/`) are
-  not candidates, but a draft/MTP file pairs with the model and can now ride
-  along. Default `none`.
+- **`--extras {none,mtp,all}`** — GGUFs in subdirectories that are not named
+  after a quantization (`MTP/`, `imatrix/`) are not candidates, but a draft/MTP
+  file pairs with the model and can now ride along. Default `none`.
 - `--dry-run`, `-y`, `--json`, `--revision`, `--mmproj`, `--probe`, `--hf-bin`.
 - **`docs/`** — command, configuration and architecture references.
 - `kv_measured_on` and `kv_derived_f16_bytes` are recorded by
@@ -35,14 +35,25 @@ This project has not cut a release yet; `version` in `pyproject.toml` is still
 
 ### Fixed
 
+- **A model kept in a quantization-named directory was unreachable.**
+  `unsloth/Qwen3.8-Flash-Next-GGUF` puts all three shards in `UD-IQ1_S/` and
+  leaves nothing but a README at the root. The "root-level files only" rule
+  below threw every candidate away, so `gguf-fetch` reported **no GGUF in this
+  repo** and there was no way to download files that were plainly there. A
+  subdirectory whose name is itself a quantization label (`UD-IQ1_S`, `Q4_K_M`,
+  `BF16`) is now a candidate, labelled by the directory so `--pick UD-IQ1_S`
+  works. `MTP`, `imatrix` and `original` do not parse as quantization labels and
+  stay out, as does an `mtp`/`draft` file inside a quantization directory; the
+  bpw and `n_tensors >= block_count` guards still apply on top.
 - **Not every GGUF in a repo is the model.** `unsloth/Qwen3.8-27B-GGUF` ships
   `MTP/mtp-…-Q4_0.gguf` (1.28 GiB). It was treated as a candidate, its `Q4_0`
   label collided with the real 14.95 GiB file, and — being the smallest — it was
   picked as the representative, applying its 4.0 KB/token (1 KV layer of 65) to
   every row. The real model is 68.0 KB/token (17 of 65): **17× out**, in a table
-  that looked entirely reasonable. Root-level files only; the representative is
-  tried largest-first and must satisfy `n_tensors >= block_count`; colliding
-  labels are spelled out.
+  that looked entirely reasonable. The representative is tried largest-first and
+  must satisfy `n_tensors >= block_count`; colliding labels are spelled out.
+  (This originally also restricted candidates to root-level files — see the
+  entry above for why that part was replaced.)
 - **A root-level file that is not weights.** The same repo has
   `imatrix_unsloth.gguf` at the root — 13 MiB, 0.004 bpw against a 27B parameter
   count — where the subdirectory rule cannot catch it. `--spread` was selecting
