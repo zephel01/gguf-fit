@@ -193,6 +193,96 @@ def test_subdirectory_gguf_is_not_a_candidate():
     assert "Q4_0" in labels
 
 
+#: 実物 (unsloth/Qwen3.8-Flash-Next-GGUF)。ルートには README と
+#: .gitattributes しか無く、**本体のシャードは丸ごと量子化名のフォルダの中**。
+#: これを弾いていたので body が空になり「GGUF が無い」で止まっていた。
+QUANT_DIR_SIBLINGS = [
+    {"rfilename": ".gitattributes", "size": 1_800},
+    {"rfilename": "README.md", "size": 65_100},
+    {"rfilename": "UD-IQ1_S/M-UD-IQ1_S-00001-of-00003.gguf", "size": 10_900_000},
+    {"rfilename": "UD-IQ1_S/M-UD-IQ1_S-00002-of-00003.gguf", "size": 50_000_000_000},
+    {"rfilename": "UD-IQ1_S/M-UD-IQ1_S-00003-of-00003.gguf", "size": 22_500_000_000},
+]
+
+
+def test_quant_named_directory_is_a_candidate():
+    """量子化名のフォルダに入っている本体を**取り落とさない**."""
+    body, projs, extra = fetch.group_files(QUANT_DIR_SIBLINGS)
+    assert len(body) == 1
+    assert body[0].label == "UD-IQ1_S"
+    assert len(body[0].files) == 3          # 3本まとめて1候補
+    assert body[0].size_bytes == 72_510_900_000
+    assert projs == [] and extra == []
+
+
+def test_quant_directory_label_comes_from_the_directory():
+    """ファイル名側に量子化が入っていない置き方がある.
+
+    ``Q4_K_M/model.gguf`` のラベルを ``model`` にしてしまうと
+    ``--pick Q4_K_M`` が当たらない。
+    """
+    body, _p, _e = fetch.group_files([
+        {"rfilename": "Q4_K_M/model.gguf", "size": 18_000_000_000},
+        {"rfilename": "BF16/model-00001-of-00002.gguf", "size": 45_000_000_000},
+        {"rfilename": "BF16/model-00002-of-00002.gguf", "size": 45_000_000_000},
+    ])
+    assert sorted(c.label for c in body) == ["BF16", "Q4_K_M"]
+    assert [c.label for c in fetch.match_pick(body, "Q4_K_M")] == ["Q4_K_M"]
+
+
+def test_non_quant_directories_are_still_not_candidates():
+    """**退行防止。**量子化ディレクトリを許しても MTP/ imatrix/ は本体でない."""
+    body, _projs, extra = fetch.group_files([
+        *QUANT_DIR_SIBLINGS,
+        {"rfilename": "MTP/mtp-M-Q4_0.gguf", "size": 1_280_000_000},
+        {"rfilename": "imatrix/imatrix.gguf", "size": 13_000_000},
+        {"rfilename": "original/M.gguf", "size": 50_000_000_000},
+    ])
+    assert [c.label for c in body] == ["UD-IQ1_S"]
+    assert sorted(c.files[0] for c in extra) == [
+        "MTP/mtp-M-Q4_0.gguf", "imatrix/imatrix.gguf", "original/M.gguf",
+    ]
+
+
+def test_a_draft_inside_a_quant_directory_is_not_a_candidate():
+    """量子化フォルダの中に置かれていても、draft は本体ではない."""
+    body, _projs, extra = fetch.group_files([
+        *QUANT_DIR_SIBLINGS,
+        {"rfilename": "UD-IQ1_S/mtp-M.gguf", "size": 1_280_000_000},
+        {"rfilename": "UD-Q4_K_XL/MTP/mtp.gguf", "size": 1_000_000_000},
+    ])
+    assert [c.label for c in body] == ["UD-IQ1_S"]
+    assert sorted(c.files[0] for c in extra) == [
+        "UD-IQ1_S/mtp-M.gguf", "UD-Q4_K_XL/MTP/mtp.gguf",
+    ]
+
+
+def test_mmproj_inside_a_quant_directory_is_still_mmproj():
+    _body, projs, extra = fetch.group_files([
+        *QUANT_DIR_SIBLINGS,
+        {"rfilename": "UD-IQ1_S/mmproj-F16.gguf", "size": 900_000_000},
+    ])
+    assert [c.files[0] for c in projs] == ["UD-IQ1_S/mmproj-F16.gguf"]
+    assert extra == []
+
+
+@pytest.mark.parametrize("name", [
+    "UD-IQ1_S", "Q4_K_M", "Q8_0", "IQ4_XS", "BF16", "F16", "MXFP4_MOE", "TQ1_0",
+])
+def test_quant_dir_re_accepts_quant_names(name):
+    assert fetch.QUANT_DIR_RE.fullmatch(name)
+
+
+@pytest.mark.parametrize("name", [
+    "MTP", "imatrix", "original", "drafts", "docs", "M-Q4_K_M", "Q4_K_M-extra",
+])
+def test_quant_dir_re_rejects_everything_else(name):
+    """**部分一致で拾わないこと。**``M-Q4_K_M/`` のようなフォルダは
+    量子化ごとの置き場ではなくモデルごとの置き場なので、本体とは限らない。
+    """
+    assert not fetch.QUANT_DIR_RE.fullmatch(name)
+
+
 def test_colliding_labels_get_spelled_out():
     body, _p, _e = fetch.group_files([
         {"rfilename": "a-Q4_0.gguf", "size": 10},

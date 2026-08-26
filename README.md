@@ -297,10 +297,15 @@ BF16             66.19G              no               no   no
   ships several). `--mmproj all` / `--mmproj none`.
 * **Sharded GGUFs.** `-00001-of-00003` files are grouped into one candidate and their sizes
   summed. Counted separately they would look like three small models that all fit.
-* **GGUFs in subdirectories are not candidates — but they are still reachable.** `MTP/`,
-  `imatrix/` and friends hold things that are not the model, so they stay out of the fit
-  table (treating one as the representative throws the KV rate off by 17× — see
-  [the bug list](#before-you-simplify-something)). A draft/MTP file is nonetheless used
+* **A directory named after a quantization holds the model.** Newer unsloth repos put the
+  weights in `UD-IQ1_S/`, `Q4_K_M/`, `BF16/` … with nothing but a README at the root
+  (`unsloth/Qwen3.8-Flash-Next-GGUF` is all three shards inside `UD-IQ1_S/`). Those are
+  candidates, labelled by the directory — `--pick UD-IQ1_S` works, and so does the download.
+* **Any other subdirectory is not a candidate — but it is still reachable.** `MTP/`,
+  `imatrix/`, `original/` and friends hold things that are not the model, so they stay out
+  of the fit table (treating one as the representative throws the KV rate off by 17× — see
+  [the bug list](#before-you-simplify-something)). The same goes for a `mtp`/`draft` file
+  sitting inside a quantization directory. A draft/MTP file is nonetheless used
   *together with* the model, and the model alone won't do.
 
   ```bash
@@ -604,9 +609,16 @@ The tests pin each. Please don't refactor them away.
    label collided with the real `Qwen3.8-27B-Q4_0.gguf` (14.95 GiB), and — being the
    smallest — **it was picked as the representative**, applying its 4.0 KB/token (1 KV layer
    of 65) to every row. The real model is 68.0 KB/token (17 of 65): **17× out**. The table
-   looked entirely reasonable. Fix: root-level files only, try the largest first, and refuse
-   any representative that fails `n_tensors >= block_count`.
-8. **Calibration is per-model but the config file is global.** 69.1 KB/token measured on
+   looked entirely reasonable. Fix: try the largest first, and refuse any representative
+   that fails `n_tensors >= block_count`.
+8. **…and "not at the root" is not the same as "not the model".** The fix for 7 above was
+   *root-level files only*, which was too blunt: `unsloth/Qwen3.8-Flash-Next-GGUF` keeps all
+   three shards in `UD-IQ1_S/` and nothing at the root, so every candidate was thrown away
+   and `gguf-fetch` reported **"no GGUF in this repo"** while the files sat right there.
+   Fix: a subdirectory whose *name is itself a quantization label* (`UD-IQ1_S`, `Q4_K_M`,
+   `BF16`) holds the model; `MTP`, `imatrix`, `original` do not parse as one and stay out.
+   The bpw and `n_tensors` guards still run on top of that.
+9. **Calibration is per-model but the config file is global.** 69.1 KB/token measured on
    Qwen3.8-27B was applied to Ornith-1.5-35B, whose KV costs 22.0 — understating max ctx by
    nearly 3×. `gguf-calibrate` now records `kv_measured_on` and `kv_derived_f16_bytes`, and
    both commands warn when the derived figures disagree by more than 1.15×.

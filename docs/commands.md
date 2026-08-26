@@ -32,7 +32,7 @@ With no mode flag it prints the verdict table and downloads nothing.
 | *(none)* | — | Judge only. Nothing is downloaded. |
 | `--fit` | off | Download the largest quantizations that fit the budget. |
 | `--pick NAME` | — | Download exactly this one. Matches the quant label first, then any filename substring. Reaches files that are not candidates (`--pick mtp`). |
-| `--all` | off | Download every root-level GGUF in the repo. |
+| `--all` | off | Download every candidate in the repo — root-level GGUFs plus anything inside a directory named after a quantization (`UD-IQ1_S/`, `Q4_K_M/`). |
 
 ### Choosing what `--fit` takes
 
@@ -50,7 +50,7 @@ With no mode flag it prints the verdict table and downloads nothing.
 | Flag | Default | Notes |
 | :-- | :-- | :-- |
 | `--mmproj {auto,all,none}` | `auto` | Vision projector. `auto` takes the smallest one; without it a multimodal model cannot see. |
-| `--extras {none,mtp,all}` | `none` | GGUFs in subdirectories (`MTP/`, `imatrix/`). They are never judged for fit — they are not the model. `mtp` takes draft/MTP files only. Default is `none` because what those files are for is not something this tool can read. |
+| `--extras {none,mtp,all}` | `none` | GGUFs in subdirectories that are **not** named after a quantization (`MTP/`, `imatrix/`, `original/`), plus `mtp`/`draft` files found inside a quantization directory. They are never judged for fit — they are not the model. `mtp` takes draft/MTP files only. Default is `none` because what those files are for is not something this tool can read. |
 
 ### How much to read before deciding
 

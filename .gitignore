@@ -26,3 +26,7 @@ gguf_report.txt
 
 # OS
 .DS_Store
+
+# 作業用の出力・退避先 (リポジトリの成果物ではない)
+_OUTPUTS/
+_to_delete/

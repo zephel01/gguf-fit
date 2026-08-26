@@ -110,9 +110,8 @@ SHARD_RE = re.compile(r"-(\d{5})-of-(\d{5})$")
 #: （``Q4_K_XL`` を ``Q4_K`` で切ってしまわないように）。
 #: 実物で確かめた形: Q4_K_M / Q6_K / Q8_0 / IQ4_XS / IQ4_NL / UD-Q5_K_XL /
 #: BF16 / F16 / MXFP4_MOE / TQ1_0
-QUANT_RE = re.compile(
-    r"(?:^|[-_.])"
-    r"(?P<label>(?:UD-)?(?:"
+_QUANT_ALT = (
+    r"(?:UD-)?(?:"
     r"IQ\d+_[A-Z]+(?:_[A-Z]+)?"
     r"|Q\d+_[KS](?:_[A-Z]+)?"
     r"|Q\d+_\d+"
@@ -120,9 +119,20 @@ QUANT_RE = re.compile(
     r"|NVFP\d+"
     r"|TQ\d+_\d+"
     r"|BF16|F16|F32"
-    r"))(?=$|[-_.])",
+    r")"
+)
+QUANT_RE = re.compile(
+    r"(?:^|[-_.])"
+    r"(?P<label>" + _QUANT_ALT + r")(?=$|[-_.])",
     re.IGNORECASE,
 )
+
+#: **ディレクトリ名そのもの**が量子化ラベルか。``fullmatch`` で使う。
+#: 実物: unsloth の新しい置き方は量子化ごとにフォルダを切る
+#: (``UD-IQ1_S/Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00003.gguf``)。
+#: ``MTP`` / ``imatrix`` / ``original`` は**一致しない**ので、
+#: 「本体ではないサブディレクトリ」との区別がこれ1本で付く。
+QUANT_DIR_RE = re.compile(_QUANT_ALT, re.IGNORECASE)
 
 #: ビジョン投影（mmproj）。本体とは別枠で扱う
 MMPROJ_RE = re.compile(r"(^|/)mmproj", re.IGNORECASE)
@@ -215,8 +225,19 @@ def group_files(
       * 一番小さいので**代表として選ばれ**、その 4.0 KB/token (KV層 1/65) が
         全行に当たった。本物は 68.0 KB/token (17/65) で、**17倍ずれる**
 
-    表は「それらしく」出る。だから気づかない。HF の GGUF リポジトリは本体を
-    ルートに置く決まりになっているので、**ルート直下だけを候補**にする。
+    表は「それらしく」出る。だから気づかない。
+
+    **ただし「サブディレクトリ = 本体ではない」は言い過ぎだった。**実物:
+    unsloth/Qwen3.8-Flash-Next-GGUF は本体のシャード3本を丸ごと
+    ``UD-IQ1_S/`` に入れている (ルートには README と .gitattributes しか無い)。
+    これを一律に弾くと body が空になり、``fetch_no_gguf`` で止まる —
+    **ファイルは目の前にあるのにダウンロードできない**。
+
+    そこで、**ディレクトリ名そのものが量子化ラベルなら本体**とみなす
+    (``UD-IQ1_S/`` ``Q4_K_M/`` ``BF16/``)。``MTP`` ``imatrix`` ``original``
+    は量子化名として読めないので、これまでどおり extras に落ちる。
+    量子化ディレクトリの中に入っていても ``mtp``/``draft`` と読める
+    ファイルは本体にしない。
     """
     groups: dict[str, dict[str, Any]] = {}
     for entry in siblings:
@@ -236,8 +257,18 @@ def group_files(
     for base, slot in groups.items():
         files = tuple(sorted(slot["files"]))
         mm = is_mmproj(base)
-        cand = Candidate(quant_label(base), files, slot["size"], mm)
-        if "/" in base:
+        dirname, _, stem = base.rpartition("/")
+        # ラベルは**ディレクトリ名を優先**する。量子化ごとにフォルダを切る
+        # 置き方では、ファイル名側に量子化が入っていないことがある
+        # (``Q4_K_M/model.gguf`` の quant_label は "model" になってしまう)
+        promoted = (
+            bool(dirname)
+            and QUANT_DIR_RE.fullmatch(dirname) is not None
+            and MTP_FILE_RE.search("/" + stem) is None
+        )
+        label = dirname if (promoted and not mm) else quant_label(base)
+        cand = Candidate(label, files, slot["size"], mm)
+        if dirname and not promoted:
             extra.append(cand)      # MTP/ imatrix/ original/ ... 本体ではない
         elif mm:
             proj.append(cand)
