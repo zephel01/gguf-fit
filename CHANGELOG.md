@@ -35,6 +35,20 @@ This project has not cut a release yet; `version` in `pyproject.toml` is still
 
 ### Fixed
 
+- **A split model whose first shard holds no tensors got no KV figure.** In
+  `unsloth/Qwen3.8-Flash-Next-GGUF` the `-00001-of-00003` shard is 10.9 MB of
+  metadata and tokenizer with zero tensors; the weights start in shard 2. Only
+  that shard was read, so there was nothing to count: `n_tensors >= block_count`
+  refused it and the table fell back to file size — no bpw, no max ctx. Taking
+  KV layers from `block_count` instead would have been wrong by **4×** (48 blocks,
+  but only 12 carry `attn_k`/`attn_v`; the rest are linear attention). When the
+  first shard has no tensors, the other shards' headers are now read and merged
+  (`merge_shard_headers`): tensors concatenated, `n_params` summed, metadata taken
+  from whichever shard has it. 34.4 MiB transferred instead of 10.4 MiB, against a
+  67.56 GiB download, and the extra read is announced.
+- **"The KV figures come from the header of `<nothing>`."** When a header was
+  fetched but none was usable, the source line printed with an empty filename.
+  It now says no usable header was found, and reports the transfer.
 - **A model kept in a quantization-named directory was unreachable.**
   `unsloth/Qwen3.8-Flash-Next-GGUF` puts all three shards in `UD-IQ1_S/` and
   leaves nothing but a README at the root. The "root-level files only" rule

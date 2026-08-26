@@ -271,6 +271,11 @@ BF16             66.19G              no               no   no
   the same native ctx, the same MTP tensors. Only the file size moves. The output always
   names the file the figure came from. `--probe all` reads every header instead (more
   transfer); `--probe none` reads none and judges on file size alone, and says so.
+* **Split models whose first shard holds no weights.** Some repos put the metadata and
+  tokenizer in shard 1 and start the tensors in shard 2 (`unsloth/Qwen3.8-Flash-Next-GGUF`:
+  10.9 MB, zero tensors). KV layers are *counted from tensors*, never taken from
+  `block_count`, so one shard is not enough — the other shards' headers are read and merged.
+  It says when it does this, and the extra transfer shows in the reported figure.
 * **The `bpw` column is measured.** File size ÷ parameter count. Parameter counts do not
   change with quantization, so one header gives it for every row. **This repo started from
   "the file name lies about the bit width" — here is that lie as a number:** `UD-Q6_K_XL`
@@ -622,6 +627,18 @@ The tests pin each. Please don't refactor them away.
    Qwen3.8-27B was applied to Ornith-1.5-35B, whose KV costs 22.0 — understating max ctx by
    nearly 3×. `gguf-calibrate` now records `kv_measured_on` and `kv_derived_f16_bytes`, and
    both commands warn when the derived figures disagree by more than 1.15×.
+10. **The first shard is not always where the weights are.** In
+   `unsloth/Qwen3.8-Flash-Next-GGUF` the `-00001-of-00003` shard is 10.9 MB of metadata and
+   tokenizer with **zero tensors**; the weights start in shard 2. Reading only the first
+   shard — which is what "read one header" meant — got the architecture but nothing to
+   count, so `n_tensors >= block_count` refused it and the whole table fell back to file
+   size: no bpw, no max ctx. Worse, the "read it from" line printed with an **empty
+   filename**. The tempting fix is to take KV layers from `block_count`, which is bug 1
+   again: this model has 48 blocks but only **12** carry `attn_k`/`attn_v` — the other 36
+   are linear attention. Guessing would have put KV/token **4× too high**. Fix: when the
+   first shard has no tensors, read the other shards' headers too and merge them
+   (34.4 MiB instead of 10.4 MiB, against a 67.56 GiB download), and never claim a header
+   was used when none was.
 
 </details>
 
