@@ -31,6 +31,12 @@
 - `gguf-calibrate --write-config` が `kv_measured_on` と
   `kv_derived_f16_bytes` を書き残すようになりました。較正値をどのモデルで
   測ったか照合できます。
+- **`gguf-fetch --pick` に複数の名前を渡せるようになりました。**
+  `--pick Q5_K_M,Q6_K,Q8_0`・`--pick Q5_K_M, Q6_K, Q8_0`（カンマの後の空白も可）・
+  `--pick Q5_K_M --pick Q6_K` はどれも同じ意味で、1回の `hf download` で落とします。
+  名前は1つずつ照合し、**1つでも当たらなければ落とす前に止めます**（3本頼んで
+  2本だけ落ちてくる、は起こしません）。`--pick A B owner/repo` のように repo を
+  後ろに置いても repo として拾います。
 
 ### 修正
 

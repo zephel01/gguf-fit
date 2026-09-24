@@ -500,8 +500,10 @@ MESSAGES: dict[str, dict[str, str]] = {
         "ja": "VRAM 予算に収まるもののうち、大きいほうから落とす",
     },
     "help_fetch_pick": {
-        "en": "download this quantization only (for example Q5_K_M)",
-        "ja": "この量子化だけを落とす (例 Q5_K_M)",
+        "en": "download only these quantizations; several are allowed "
+              "(for example Q5_K_M or Q5_K_M,Q6_K,Q8_0)",
+        "ja": "指定した量子化だけを落とす。複数可 "
+              "(例 Q5_K_M / Q5_K_M,Q6_K,Q8_0)",
     },
     "help_all": {
         "en": "download every GGUF in the repo",

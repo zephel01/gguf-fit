@@ -31,7 +31,7 @@ With no mode flag it prints the verdict table and downloads nothing.
 | :-- | :-- | :-- |
 | *(none)* | — | Judge only. Nothing is downloaded. |
 | `--fit` | off | Download the largest quantizations that fit the budget. |
-| `--pick NAME` | — | Download exactly this one. Matches the quant label first, then any filename substring. Reaches files that are not candidates (`--pick mtp`). |
+| `--pick NAME…` | — | Download exactly these. Matches the quant label first, then any filename substring. Reaches files that are not candidates (`--pick mtp`). Several names: `--pick Q5_K_M,Q6_K,Q8_0`, `--pick Q5_K_M, Q6_K, Q8_0` or `--pick A --pick B`. If any name matches nothing, it stops before downloading. |
 | `--all` | off | Download every candidate in the repo — root-level GGUFs plus anything inside a directory named after a quantization (`UD-IQ1_S/`, `Q4_K_M/`). |
 
 ### Choosing what `--fit` takes

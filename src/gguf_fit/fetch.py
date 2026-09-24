@@ -678,6 +678,61 @@ def match_pick(cands: list[Candidate], pick: str) -> list[Candidate]:
             if needle in c.label.lower() or any(needle in f.lower() for f in c.files)]
 
 
+def split_picks(values: list[str] | None) -> list[str]:
+    """``--pick`` の値を名前のリストにする。カンマ区切り・空白区切り・複数回を受ける.
+
+    ``--pick Q5_K_M, Q6_K, Q8_0`` はシェルで ``["Q5_K_M,", "Q6_K,", "Q8_0"]`` に
+    分かれて届く。末尾のカンマを残すと ``"q5_k_m,"`` を探して何にも当たらない。
+    同じ名前は1つにまとめる (大文字小文字は区別しない)。順序は指定どおり。
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        for part in value.split(","):
+            name = part.strip()
+            if name and name.lower() not in seen:
+                seen.add(name.lower())
+                out.append(name)
+    return out
+
+
+def match_picks(cands: list[Candidate], picks: list[str],
+                ) -> tuple[list[Candidate], list[str]]:
+    """複数の ``--pick`` を1つずつ ``match_pick`` に通す。``(当たった候補, 外れた名前)``.
+
+    **1つでも外れたら呼び手が止める。**「3本頼んで2本だけ落ちてきた」を
+    黙って起こさない。候補は重複を除き、指定の順に並べる。
+    """
+    hits: list[Candidate] = []
+    missing: list[str] = []
+    for pick in picks:
+        found = match_pick(cands, pick)
+        if not found:
+            missing.append(pick)
+        hits.extend(c for c in found if c not in hits)
+    return hits, missing
+
+
+#: ``owner/name`` の形。``--pick A B owner/repo`` で repo まで吸われたのを拾い直す
+_REPO_ID_RE = re.compile(r"^[\w.-]+/[\w.-]+$")
+
+
+def _rescue_repo(args) -> None:
+    """``--pick`` が空白区切りで複数取るので、後ろに置いた repo まで吸い込む.
+
+    ``gguf-fetch --pick Q5_K_M org/repo`` は1つしか取らなかった頃は通っていた。
+    **通っていたものを壊さない。**repo が空で、最後の値が ``owner/name`` の
+    形のときだけ repo に戻す。
+    """
+    if args.repo or not args.pick or len(args.pick) < 2:
+        # 1つだけなら名前として扱う (repo 抜けは後で repo is required になる)
+        return
+    last = args.pick[-1].strip().rstrip(",")
+    if _REPO_ID_RE.match(last):
+        args.repo = last
+        args.pick = args.pick[:-1]
+
+
 # --------------------------------------------------------------------------
 # 出力
 # --------------------------------------------------------------------------
@@ -781,7 +836,9 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("repo", nargs="?", help=t("help_repo", DEFAULT_LANG))
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--fit", action="store_true", help=t("help_fit", DEFAULT_LANG))
-    mode.add_argument("--pick", default=None, help=t("help_fetch_pick", DEFAULT_LANG))
+    # 複数取る: --pick A,B / --pick A B / --pick A --pick B (split_picks でならす)
+    mode.add_argument("--pick", nargs="+", action="extend", default=None,
+                      metavar="NAME", help=t("help_fetch_pick", DEFAULT_LANG))
     mode.add_argument("--all", action="store_true", dest="all_",
                       help=t("help_all", DEFAULT_LANG))
     ap.add_argument("--top", type=int, default=DEFAULT_TOP,
@@ -916,9 +973,9 @@ def _selection(args, body: list[Candidate], verdicts: list[Verdict],
         # **--pick は extras も探す。**候補表に出ていないものを名指しで取りたい
         # ことがある (MTP の draft など)。ここを body だけにしていたので、
         # 「要るなら --pick で」という案内が嘘になっていた
-        hits = match_pick(body + list(extras or []), args.pick)
-        if not hits:
-            sys.exit(t("fetch_pick_none", lang, pick=args.pick,
+        hits, missing = match_picks(body + list(extras or []), args.pick)
+        if missing:
+            sys.exit(t("fetch_pick_none", lang, pick=", ".join(missing),
                        names=", ".join(c.label for c in body)))
         return hits
     if args.fit:
@@ -932,6 +989,12 @@ def _selection(args, body: list[Candidate], verdicts: list[Verdict],
 def main() -> int:
     ap = _build_parser()
     args = ap.parse_args()
+    _rescue_repo(args)
+    if args.pick is not None:
+        args.pick = split_picks(args.pick)
+        if not args.pick:
+            # "--pick ," のように名前が1つも残らなかった
+            ap.error("--pick needs at least one name")
 
     cfg, cfg_path = load_config(args.config)
     if args.refresh:
@@ -998,7 +1061,7 @@ def main() -> int:
         print(t("fetch_filtered", lang, dropped=dropped, kept=len(kept)))
         body = kept
 
-    picked = match_pick(body, args.pick) if args.pick else []
+    picked = match_picks(body, args.pick)[0] if args.pick else []
     targets = _probe_targets(body, args.probe, picked)
     recs, transferred = _load_records(args.repo, args.revision, targets, lang,
                                       first_valid_only=args.probe == "one")
@@ -1172,8 +1235,15 @@ def main() -> int:
     print()
     print(t("fetch_done", lang, dir=dest))
     print(f"  gguf-probe --json --out gguf.json {dest}/*.gguf")
-    print(f"  gguf-plan gguf.json --pick {selected[0].label}" if selected
-          else "  gguf-plan gguf.json")
+    # --pick で複数取ったなら、それぞれの起動コマンドへの道を出す
+    body_labels = {c.label for c in body}
+    planned = [c.label for c in selected if c.label in body_labels]
+    if args.pick and planned:
+        for label in planned:
+            print(f"  gguf-plan gguf.json --pick {label}")
+    else:
+        print(f"  gguf-plan gguf.json --pick {selected[0].label}" if selected
+              else "  gguf-plan gguf.json")
     return 0
 
 

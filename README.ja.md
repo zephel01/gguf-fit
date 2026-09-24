@@ -245,6 +245,7 @@ Qwen3.8-27B-Q5_K_M / RTX 5090 / `-fa on` / `--spec-type draft-mtp` で:
 gguf-fetch ornith-ai/Ornith-1.5-35B-A3B-GGUF                  # 判定だけ
 gguf-fetch ornith-ai/Ornith-1.5-35B-A3B-GGUF --fit            # 載るものを上から
 gguf-fetch ornith-ai/Ornith-1.5-35B-A3B-GGUF --pick Q5_K_M    # 指定した1本だけ
+gguf-fetch ornith-ai/Ornith-1.5-35B-A3B-GGUF --pick Q5_K_M,Q6_K,Q8_0  # 指定したものだけ
 gguf-fetch ornith-ai/Ornith-1.5-35B-A3B-GGUF --all            # リポジトリの GGUF 全部
 ```
 
