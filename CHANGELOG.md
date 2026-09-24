@@ -32,6 +32,12 @@ This project has not cut a release yet; `version` in `pyproject.toml` is still
 - `kv_measured_on` and `kv_derived_f16_bytes` are recorded by
   `gguf-calibrate --write-config`, so a calibration can be matched to the model
   it was taken on.
+- **`gguf-fetch --pick` takes several names.** `--pick Q5_K_M,Q6_K,Q8_0`,
+  `--pick Q5_K_M, Q6_K, Q8_0` (spaces after the commas are fine) and
+  `--pick Q5_K_M --pick Q6_K` all mean the same thing, and the files go down in
+  one `hf download`. Each name is matched on its own; **if any one matches
+  nothing, it stops before downloading** rather than bringing back two of the
+  three. `--pick A B owner/repo` still finds the repo at the end.
 
 ### Fixed
 

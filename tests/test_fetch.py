@@ -990,3 +990,78 @@ def test_dry_run_prints_the_command_and_downloads_nothing(
 
 def _never_called(*_args, **_kwargs):
     raise AssertionError("--dry-run must not run hf download")
+
+
+# ---- --pick を複数 ----
+
+def test_split_picks_accepts_commas_spaces_and_repeats():
+    # シェルは "--pick Q5_K_M, Q6_K, Q8_0" を末尾カンマ付きで分けて渡す
+    assert fetch.split_picks(["Q5_K_M,", "Q6_K,", "Q8_0"]) == ["Q5_K_M", "Q6_K", "Q8_0"]
+    assert fetch.split_picks(["Q5_K_M,Q6_K,Q8_0"]) == ["Q5_K_M", "Q6_K", "Q8_0"]
+    assert fetch.split_picks(["Q5_K_M", "Q6_K"]) == ["Q5_K_M", "Q6_K"]
+    # 同じ名前は1つに。順序は指定どおり
+    assert fetch.split_picks(["Q8_0", "q8_0,Q4_K_M", ","]) == ["Q8_0", "Q4_K_M"]
+    assert fetch.split_picks(None) == []
+
+
+def test_match_picks_reports_what_missed():
+    body, _p, _e = fetch.group_files(SIBLINGS)
+    hits, missing = fetch.match_picks(body, ["Q8_0", "Q4", "IQ2_XXS"])
+    # Q4 は部分一致で2つ。Q8_0 と重ならない。外れた名前は返す
+    assert [c.label for c in hits] == ["Q8_0", "Q4_K_M", "Q4_0"]
+    assert missing == ["IQ2_XXS"]
+    hits, missing = fetch.match_picks(body, ["Q4_0", "q4_0"])
+    assert [c.label for c in hits] == ["Q4_0"] and missing == []
+
+
+@pytest.mark.parametrize("pick_args", [
+    ["--pick", "Q4_K_M,", "Q8_0"],          # --pick Q4_K_M, Q8_0
+    ["--pick", "Q4_K_M,Q8_0"],
+    ["--pick", "Q4_K_M", "--pick", "Q8_0"],
+])
+def test_pick_takes_several(hf_server, monkeypatch, tmp_path, capsys, pick_args):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(fetch._hardware, "detect", lambda _b: _no_gpu_machine())
+    monkeypatch.setattr("sys.argv", [
+        "gguf-fetch", "org/repo", *pick_args, "--json", "--mmproj", "none"])
+    assert fetch.main() == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["selected"] == ["M-Q4_K_M.gguf", "M-Q8_0.gguf"]
+
+
+def test_pick_several_with_the_repo_last(hf_server, monkeypatch, tmp_path, capsys):
+    """空白区切りで取るので repo まで吸う。後ろに置いた repo は拾い直す."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(fetch._hardware, "detect", lambda _b: _no_gpu_machine())
+    monkeypatch.setattr("sys.argv", [
+        "gguf-fetch", "--json", "--mmproj", "none", "--pick", "Q8_0", "mtp",
+        "org/repo"])
+    assert fetch.main() == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["repo"] == "org/repo"
+    # 候補外 (MTP) も複数指定の中で名指しできる
+    assert out["selected"] == ["M-Q8_0.gguf", "MTP/mtp-M-Q4_0.gguf"]
+
+
+def test_pick_one_of_several_misses_stops_before_download(
+        hf_server, monkeypatch, tmp_path, capsys):
+    """3本頼んで2本だけ落ちてくる、を黙って起こさない."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(fetch._hardware, "detect", lambda _b: _no_gpu_machine())
+    monkeypatch.setattr(fetch.subprocess, "run", _never_called)
+    monkeypatch.setattr("sys.argv", [
+        "gguf-fetch", "org/repo", "--pick", "Q4_K_M,", "IQ2_XXS,", "Q8_0",
+        "--mmproj", "none", "--yes"])
+    with pytest.raises(SystemExit) as exc:
+        fetch.main()
+    msg = str(exc.value.code)
+    assert "IQ2_XXS" in msg and "Q4_K_M" in msg  # 外れた名前と、あるもの
+    assert "--pick IQ2_XXS matched nothing" in msg or "--pick IQ2_XXS に" in msg
+
+
+def test_pick_with_no_names_left_is_an_error(monkeypatch, capsys):
+    monkeypatch.setattr("sys.argv", ["gguf-fetch", "org/repo", "--pick", ","])
+    with pytest.raises(SystemExit) as exc:
+        fetch.main()
+    assert exc.value.code == 2
+    assert "--pick needs at least one name" in capsys.readouterr().err

@@ -234,6 +234,7 @@ That is why the default `overhead` leaves room instead of sitting exactly on the
 gguf-fetch ornith-ai/Ornith-1.5-35B-A3B-GGUF                  # just the verdict
 gguf-fetch ornith-ai/Ornith-1.5-35B-A3B-GGUF --fit            # the ones that fit
 gguf-fetch ornith-ai/Ornith-1.5-35B-A3B-GGUF --pick Q5_K_M    # exactly this one
+gguf-fetch ornith-ai/Ornith-1.5-35B-A3B-GGUF --pick Q5_K_M,Q6_K,Q8_0  # exactly these
 gguf-fetch ornith-ai/Ornith-1.5-35B-A3B-GGUF --all            # every GGUF in the repo
 ```
 
