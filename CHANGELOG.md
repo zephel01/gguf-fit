@@ -41,6 +41,15 @@ This project has not cut a release yet; `version` in `pyproject.toml` is still
 
 ### Fixed
 
+- **GGUFs without `attention.key_length` were rejected as "not the main model".**
+  Older converters omit the key (e.g. third-party Qwen2.5 quants, and
+  `Qwen/Qwen2.5-0.5B-Instruct-GGUF`), so no KV size was computed and
+  `gguf-fetch` turned down every quantization — 771 tensors for 64 blocks was
+  reported as if the tensor count were the problem. The head dimension is now
+  taken as `embedding_length / head_count`, the same default llama.cpp uses
+  (Qwen2.5-32B: 128 → 256 KiB/token), and `gguf-probe` says when it did so.
+  When the KV size still cannot be computed, `gguf-fetch` now names the missing
+  metadata instead of blaming the tensor count.
 - **A split model whose first shard holds no tensors got no KV figure.** In
   `unsloth/Qwen3.8-Flash-Next-GGUF` the `-00001-of-00003` shard is 10.9 MB of
   metadata and tokenizer with zero tensors; the weights start in shard 2. Only

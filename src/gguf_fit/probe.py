@@ -128,6 +128,20 @@ def _find_kv(reader, suffix):
     return None
 
 
+def _default_head_dim(meta: dict) -> int | None:
+    """``key_length`` が無いときの head_dim。llama.cpp の既定と同じ
+    ``embedding_length / head_count``。割り切れなければ推定しない."""
+    n_embd = meta.get("embedding_length")
+    n_head = meta.get("head_count")
+    if isinstance(n_head, list):
+        n_head = max(n_head) if n_head else None
+    if not isinstance(n_embd, int) or not isinstance(n_head, int) or n_head <= 0:
+        return None
+    if n_embd % n_head:
+        return None
+    return n_embd // n_head
+
+
 def summarize_tensors(tensors, meta: dict | None = None) -> dict:
     """テンソル一覧から、量子化の配分・ハイブリッド注意・KVサイズを出す.
 
@@ -138,6 +152,8 @@ def summarize_tensors(tensors, meta: dict | None = None) -> dict:
     ``meta`` は ``block_count`` / ``head_count_kv`` / ``key_length`` /
     ``value_length`` を含む辞書（GGUF のメタデータから読んだもの）。
     KVサイズの計算にだけ使う。無ければ ``kv_cache`` は返らない。
+    ``key_length`` だけが無いときは ``embedding_length / head_count`` で補い、
+    ``kv_cache["head_dim_estimated"]`` を True にする。
     """
     meta = meta or {}
     out: dict = {}
@@ -218,6 +234,14 @@ def summarize_tensors(tensors, meta: dict | None = None) -> dict:
     if isinstance(n_kv, list):
         n_kv = n_kv[0] if n_kv else None
     k_len = meta.get("key_length")
+    head_dim_estimated = False
+    if not k_len:
+        # 古い変換スクリプトの GGUF は ``attention.key_length`` を持たない
+        # (実物: Qwen2.5 系の第三者量子化)。llama.cpp 自身もこのとき
+        # ``embedding_length / head_count`` を head_dim に使うので、同じ値で埋める。
+        # 埋めないと kv_cache が出ず、fetch が本体を「本体でない」と弾く
+        k_len = _default_head_dim(meta)
+        head_dim_estimated = k_len is not None
     v_len = meta.get("value_length") or k_len
     kv_layers = len(kv_layers_set) if kv_layers_set else n_block
     out["kv_layers"] = sorted(kv_layers_set)
@@ -230,6 +254,7 @@ def summarize_tensors(tensors, meta: dict | None = None) -> dict:
             "total_layers": n_block or len(all_layers),
             "counted_from": "attn_k/attn_v tensors" if kv_layers_set else "block_count (fallback)",
             "bytes_per_token_f16": per_tok,
+            "head_dim_estimated": head_dim_estimated,
             "gb_32k_f16": round(per_tok * 32768 / 1e9, 2),
             "gb_64k_f16": round(per_tok * 65536 / 1e9, 2),
             "gb_64k_q8_0": round(per_tok * 65536 / 1e9 * 0.53, 2),  # 8bit+スケール
@@ -336,6 +361,8 @@ def render(p: dict, roles: bool = False, lang: str = DEFAULT_LANG) -> str:
         L.append("   " + t("kv_cache", lang, n_kv=kv["kv_bearing_layers"],
                            n_all=kv["total_layers"],
                            kb=kv["bytes_per_token_f16"] / 1024))
+        if kv.get("head_dim_estimated"):
+            L.append("   " + t("kv_head_dim_estimated", lang))
         L.append("   " + t("kv_sizes", lang, g32=kv["gb_32k_f16"],
                            g64=kv["gb_64k_f16"], q64=kv["gb_64k_q8_0"]))
     if roles and p.get("mixed_roles"):

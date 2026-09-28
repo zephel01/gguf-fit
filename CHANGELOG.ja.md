@@ -40,6 +40,14 @@
 
 ### 修正
 
+- **`attention.key_length` の無い GGUF を「本体に見えない」と弾いていた。**
+  古い変換スクリプトはこのキーを書かない (第三者の Qwen2.5 量子化や
+  `Qwen/Qwen2.5-0.5B-Instruct-GGUF` など)。KV が計算できず、`gguf-fetch` が
+  全量子化を不採用にしていた — しかも 64層に 771本あるのに、テンソル数が
+  原因かのようなメッセージだった。head_dim を llama.cpp の既定と同じ
+  `embedding_length / head_count` で補うようにした (Qwen2.5-32B: 128 →
+  256 KiB/token)。補ったときは `gguf-probe` がそう書く。それでも KV が出ない
+  ときは、`gguf-fetch` は足りないメタデータ名を出す。
 - **1本目のシャードにテンソルが無い分割モデルで KV が出なかった。**
   `unsloth/Qwen3.8-Flash-Next-GGUF` の `-00001-of-00003` は 10.9 MB ありますが
   中身はメタデータと tokenizer だけでテンソルは0本、重みは2本目から始まります。

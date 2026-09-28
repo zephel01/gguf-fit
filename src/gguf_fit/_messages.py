@@ -88,6 +88,12 @@ MESSAGES: dict[str, dict[str, str]] = {
         "en": "KV cache: {n_kv}/{n_all} layers hold it = {kb:.0f} KB/token",
         "ja": "KVキャッシュ: {n_kv}/{n_all} 層が保持 = {kb:.0f} KB/token",
     },
+    "kv_head_dim_estimated": {
+        "en": "   (no attention.key_length in the file; head_dim taken as "
+              "embedding_length / head_count, as llama.cpp does)",
+        "ja": "   (attention.key_length が無いので、llama.cpp と同じく "
+              "embedding_length / head_count を head_dim とした)",
+    },
     "kv_sizes": {
         "en": "   f16: 32k={g32}GB  64k={g64}GB   / q8_0: 64k~{q64}GB",
         "ja": "   f16: 32k={g32}GB  64k={g64}GB   / q8_0: 64k≈{q64}GB",
@@ -697,6 +703,14 @@ MESSAGES: dict[str, dict[str, str]] = {
               "Trying the next candidate.",
         "ja": "{file} は本体に見えないので ({blocks}層に対してテンソル {n}本)、"
               "KV の数字を他の行に流用しませんでした。次の候補を試します。",
+    },
+    "fetch_no_kv": {
+        "en": "{file}: could not compute the KV cache size (missing {missing} in "
+              "the metadata), so its KV figure was not borrowed for the other rows. "
+              "Trying the next candidate.",
+        "ja": "{file} は KV キャッシュの大きさを計算できないので (メタデータに "
+              "{missing} が無い)、KV の数字を他の行に流用しませんでした。"
+              "次の候補を試します。",
     },
     "fetch_not_weights": {
         "en": "# {n} root-level file(s) are too small to be weights at this parameter "

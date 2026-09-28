@@ -197,3 +197,29 @@ def test_empty_input_does_not_crash():
     assert s["n_roles"] == 0
     assert s["dominant_weight_type"] is None
     assert s["per_layer_varying"] is False
+
+
+def test_missing_key_length_uses_embedding_over_heads():
+    """古い GGUF は key_length を持たない。llama.cpp と同じ n_embd/n_head で補う."""
+    tensors = [(f"blk.{i}.attn_k.weight", "Q5_K") for i in range(64)] \
+        + [(f"blk.{i}.attn_v.weight", "Q5_K") for i in range(64)]
+    s = summarize_tensors(tensors, {"block_count": 64, "head_count": 40,
+                                    "head_count_kv": 8, "embedding_length": 5120})
+    # Qwen2.5-32B: 64 x 8 x (128+128) x 2 = 256 KiB/token
+    assert s["kv_cache"]["bytes_per_token_f16"] == 262144
+    assert s["kv_cache"]["head_dim_estimated"] is True
+
+
+def test_key_length_present_is_not_marked_estimated():
+    s = summarize_tensors([("blk.0.attn_k.weight", "Q4_K")],
+                          {"block_count": 1, "head_count": 40, "head_count_kv": 8,
+                           "embedding_length": 5120, "key_length": 256})
+    assert s["kv_cache"]["bytes_per_token_f16"] == 1 * 8 * 512 * 2
+    assert s["kv_cache"]["head_dim_estimated"] is False
+
+
+def test_head_dim_is_not_guessed_when_it_does_not_divide():
+    s = summarize_tensors([("blk.0.attn_k.weight", "Q4_K")],
+                          {"block_count": 1, "head_count": 3, "head_count_kv": 1,
+                           "embedding_length": 100})
+    assert "kv_cache" not in s

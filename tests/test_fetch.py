@@ -1065,3 +1065,69 @@ def test_pick_with_no_names_left_is_an_error(monkeypatch, capsys):
         fetch.main()
     assert exc.value.code == 2
     assert "--pick needs at least one name" in capsys.readouterr().err
+
+
+# --- key_length が無い GGUF (古い変換スクリプト) --------------------------
+
+#: 実物: Thaurock/Qwen2.5-Coder-32B-abliterated-GGUF。``attention.key_length``
+#: が無く、テンソルは 64層 x 12本 + 3 = 771本。本体なのに「本体に見えない」と
+#: 全量子化が弾かれていた
+QWEN2_OLD_META = [
+    ("general.architecture", T_STRING, _gstr("qwen2")),
+    ("qwen2.block_count", T_UINT32, _u32(4)),
+    ("qwen2.context_length", T_UINT32, _u32(32768)),
+    ("qwen2.embedding_length", T_UINT32, _u32(5120)),
+    ("qwen2.attention.head_count", T_UINT32, _u32(40)),
+    ("qwen2.attention.head_count_kv", T_UINT32, _u32(8)),
+]
+QWEN2_TENSORS = (
+    [(f"blk.{i}.{r}", 12) for i in range(4)
+     for r in ("attn_q.weight", "attn_k.weight", "attn_v.weight", "ffn_down.weight")]
+    + [("token_embd.weight", 12), ("output.weight", 14)]
+)
+
+
+def _serve_headers(monkeypatch, blobs: dict[str, bytes]):
+    def fake_fetch_header(url):
+        data = blobs[url.rsplit("/", 1)[-1]]
+        return _ggufhdr.parse_header(data), len(data)
+    monkeypatch.setattr(fetch, "fetch_header", fake_fetch_header)
+
+
+def test_missing_key_length_is_filled_from_embedding_and_heads(monkeypatch):
+    """head_dim = 5120 / 40 = 128。KV = 4層 x 8 x (128+128) x 2 B."""
+    _serve_headers(monkeypatch, {
+        "Q-Q5_K_S.gguf": build_gguf(QWEN2_OLD_META, QWEN2_TENSORS, dims=BIG_DIMS)})
+    body, _p, _e = fetch.group_files([
+        {"rfilename": "Q-Q5_K_S.gguf", "size": 20_000_000_000}])
+    recs, _ = fetch._load_records("org/repo", "main", body, "en",
+                                  first_valid_only=True)
+    rec = recs["Q5_K_S"]
+    assert rec["kv_cache"]["bytes_per_token_f16"] == 4 * 8 * 256 * 2
+    assert rec["kv_cache"]["head_dim_estimated"] is True
+    assert fetch.looks_like_the_main_model(rec)
+
+
+def test_no_kv_is_not_reported_as_too_few_tensors(monkeypatch, capsys):
+    """KV が出ないだけのものを「テンソルが少ない」と言わない."""
+    meta = [m for m in QWEN2_OLD_META if not m[0].endswith("embedding_length")]
+    _serve_headers(monkeypatch, {
+        "Q-Q5_K_S.gguf": build_gguf(meta, QWEN2_TENSORS, dims=BIG_DIMS)})
+    body, _p, _e = fetch.group_files([
+        {"rfilename": "Q-Q5_K_S.gguf", "size": 20_000_000_000}])
+    recs, _ = fetch._load_records("org/repo", "main", body, "en",
+                                  first_valid_only=True)
+    assert recs == {}
+    err = capsys.readouterr().err
+    assert "could not compute the KV cache size" in err
+    assert "key_length" in err
+    assert "does not look like the main model" not in err
+
+
+def test_not_the_main_model_reason_names_each_case():
+    full = _rec(20.0)
+    assert fetch.not_the_main_model_reason(full) is None
+    assert fetch.not_the_main_model_reason({**full, "n_tensors": 2}) == "too_few"
+    assert fetch.not_the_main_model_reason({**full, "kv_cache": None}) == "no_kv"
+    assert fetch.not_the_main_model_reason(
+        {**full, "is_language_model": False}) == "not_lm"
