@@ -286,10 +286,37 @@ def looks_like_the_main_model(rec: dict) -> bool:
     それは本体ではない (実物: MTP の draft は 18本、本体は 866本)。
     ``n_tensors >= block_count`` は緩い線だが、桁で外れているものは確実に弾ける。
     """
-    if not rec.get("is_language_model") or not rec.get("kv_cache"):
-        return False
+    return not_the_main_model_reason(rec) is None
+
+
+def not_the_main_model_reason(rec: dict) -> str | None:
+    """代表にできない理由。できるなら ``None``.
+
+    理由を分けるのは、**メッセージを取り違えない**ため。KV が計算できない
+    だけのものを「テンソルが少ない」と言うと、本体を疑う方向に誤誘導する
+    (実物: key_length の無い Qwen2.5 が 771本/64層で「本体に見えない」と出た)。
+
+    * ``"not_lm"``    — 言語モデルではない (mmproj など)
+    * ``"no_kv"``     — KV の大きさが出ない (必要なメタデータが無い)
+    * ``"too_few"``   — 層数に対してテンソルが少なすぎる (MTP draft など)
+    """
+    if not rec.get("is_language_model"):
+        return "not_lm"
     blocks = rec.get("block_count") or 0
-    return rec["n_tensors"] >= max(int(blocks), 1)
+    if rec["n_tensors"] < max(int(blocks), 1):
+        return "too_few"
+    if not rec.get("kv_cache"):
+        return "no_kv"
+    return None
+
+
+def missing_kv_keys(rec: dict) -> list[str]:
+    """KV 計算に要るのに無いメタデータ名 (表示用)."""
+    missing = [k for k in ("block_count", "head_count_kv") if not rec.get(k)]
+    if not rec.get("key_length") and not (rec.get("embedding_length")
+                                          and rec.get("head_count")):
+        missing.append("key_length")
+    return missing or ["?"]
 
 
 def pick_mmproj(projs: list[Candidate], mode: str) -> list[Candidate]:
@@ -952,7 +979,13 @@ def _load_records(repo: str, revision: str, targets: list[Candidate],
                 continue
             header = merge_shard_headers(headers)
         rec = record_from_header(header, cand.files[0], cand.size_bytes, url)
-        if first_valid_only and not looks_like_the_main_model(rec):
+        reason = not_the_main_model_reason(rec) if first_valid_only else None
+        if reason == "no_kv":
+            print("!! " + t("fetch_no_kv", lang, file=cand.files[0],
+                            missing=", ".join(missing_kv_keys(rec))),
+                  file=sys.stderr)
+            continue
+        if reason is not None:
             print("!! " + t("fetch_not_the_model", lang, file=cand.files[0],
                             n=rec["n_tensors"], blocks=rec.get("block_count") or 0),
                   file=sys.stderr)
