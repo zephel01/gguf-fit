@@ -77,6 +77,9 @@ gguf-fetch <repo> [mode] [options]
 | `-y`, `--yes` | off | 確認を飛ばします。 |
 | `--json` | off | 候補・判定・bpw・選んだものを JSON で。 |
 | `--hf-bin PATH` | `hf`、次に `huggingface-cli` | どの実行ファイルでダウンロードするか。 |
+| `--source {auto,hf,pirateface}` | `auto` (または `source`) | ファイル一覧の取得元。`auto`: `huggingface.co` / `pirateface.co` の URL ならそのホスト、`owner/name` だけなら Hugging Face を先に試し、401/403/404/410/451 が返ったときだけ Pirate Face へ (ネットワークエラーでは切り替えません)。 |
+| `--via {auto,swarm,hf}` | `auto` | Pirate Face のときだけ。`swarm`: magnet + `aria2c` で選んだファイルだけ取り、SHA-256 を照合。`hf`: 固定したリビジョンで `hf download`。`auto`: swarm、失敗したら `hf`。SHA-256 が記録と合うファイルが既にあれば落とし直しません。 |
+| `--aria2-bin PATH` | `aria2c` (または `aria2_bin`) | swarm のダウンロードに使う `aria2c`。 |
 | `--refresh` | off | 設定ファイルの `vram`/`threads`/`device` を無視して取り直します。 |
 
 ### やらないこと

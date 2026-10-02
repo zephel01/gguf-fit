@@ -1226,3 +1226,27 @@ def test_diffusion_repo_end_to_end_is_judged_by_size(
     assert "qwen_image21" in captured.out
     assert "come from the header" not in captured.out    # KV の出所を装わない
     assert "q-Q4_K_M.gguf" in captured.out and "q-Q8_0.gguf" in captured.out
+
+
+# ---- mmproj の名前 (mradermacher 流) ----
+
+@pytest.mark.parametrize("name", [
+    "mmproj-F16.gguf",
+    "sub/mmproj-F16.gguf",
+    "Ornith-1.5-9B-uncensored.mmproj-f16.gguf",     # モデル名の後ろに付ける流儀
+    "Model_mmproj_Q8_0.gguf",
+])
+def test_mmproj_is_recognised_wherever_the_name_puts_it(name):
+    assert fetch.is_mmproj(name)
+
+
+def test_mmproj_next_to_the_weights_does_not_collide_with_their_labels():
+    """``.mmproj-Q8_0`` を本体と読むと Q8_0 が2本になり、表の名前が長くなる."""
+    body, projs, _extras = fetch.group_files([
+        {"rfilename": "M.Q8_0.gguf", "size": 9_000_000_000},
+        {"rfilename": "M.f16.gguf", "size": 18_000_000_000},
+        {"rfilename": "M.mmproj-Q8_0.gguf", "size": 600_000_000},
+        {"rfilename": "M.mmproj-f16.gguf", "size": 900_000_000},
+    ])
+    assert sorted(c.label for c in body) == ["Q8_0", "f16"]
+    assert len(projs) == 2

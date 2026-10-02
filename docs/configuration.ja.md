@@ -91,6 +91,8 @@ CLI フラグ  >  環境変数  >  設定ファイル  >  実測  >  組み込�
 | :-- | :-- | :-- | :-- |
 | `models_dir` | str | `.` | この下にリポジトリごとのサブディレクトリを作って落とします。書いておく価値があります。既定はカレントディレクトリなので、ソースを展開した中で実行すると数十 GB がそこに入り、しかも `.gitignore` に `*.gguf` があるので `git status` は綺麗なまま、そのまま忘れます。 |
 | `hf_bin` | str | `hf`、次に `huggingface-cli` | |
+| `aria2_bin` | str | `aria2c` | Pirate Face の swarm ダウンロードで使う。 |
+| `source` | str | `auto` | `auto` / `hf` / `pirateface`。`--source` を参照。 |
 
 ## そもそもマシン固有のもの
 

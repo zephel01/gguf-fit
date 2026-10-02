@@ -64,6 +64,9 @@ KNOWN_KEYS: dict[str, type] = {
     # gguf-fetch: 落とし先と、使う hf コマンド
     "models_dir": str,
     "hf_bin": str,
+    # gguf-fetch: Pirate Face (swarm) 経由で使う aria2c と、取得元の既定
+    "aria2_bin": str,
+    "source": str,
 }
 
 #: 環境変数名は GGUF_FIT_<大文字> で固定

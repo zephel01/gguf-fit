@@ -9,6 +9,15 @@
 
 ### 追加
 
+- **`gguf-fetch` が Pirate Face から落とせるように** (`--source` / `--via` /
+  `--aria2-bin`)。Hugging Face から消えたモデル向けです。`pirateface.co` の URL、または
+  Hugging Face が 401/403/404/410/451 を返した `owner/name` について、ページから
+  ファイル一覧・固定リビジョン・magnet・ファイルごとの SHA-256 を読み、選んだファイル
+  だけを `aria2c` で swarm から取って照合します。Pirate Face の web-seed は固定
+  commit の Hugging Face への 302 で、消えたら一緒に死ぬと分かったので、`--via auto`
+  では補助 (`hf download --revision <sha>`) にだけ使います。Hugging Face にリビジョンが
+  残っているあいだの判定は今までどおり、無いときはファイルサイズだけの判定で、
+  そう表示します。JSON に `source` / `magnet` / `sizes_approximate` を追加。
 - **`gguf-fetch`** — 4本目のコマンド。Hugging Face から GGUF を落としますが、
   **落とす前に**どれが載るかを決めます。ファイル一覧は数 KB、GGUF ヘッダは
   HTTP `Range` で1本ぶん（約 12 MiB）取り、`gguf-plan` と同じ式でファイルを
@@ -40,6 +49,9 @@
 
 ### 修正
 
+- **モデル名の後ろに付く `mmproj`** (mradermacher: `<model>.mmproj-Q8_0.gguf`) を本体の
+  候補と読んでいたため、`Q8_0` / `f16` のラベルが投影モデルと衝突して表の名前が
+  ファイル名そのままになっていました。名前のどこにあっても投影モデルと認識します。
 - **拡散モデルの GGUF を LLM として評価していた。** Qwen-Image
   (`general.architecture = qwen_image21`、`block_count` / `context_length` /
   語彙のいずれも無い) のようなリポジトリで、全量子化に「KV キャッシュの大きさを

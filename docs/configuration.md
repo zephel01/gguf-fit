@@ -96,6 +96,8 @@ derived 68.0, and q8_0 measured 43.1 against a derived 36.1.
 | :-- | :-- | :-- | :-- |
 | `models_dir` | str | `.` | Downloads go into a per-repo subdirectory under this. Worth setting: the default is the current directory, so running inside a source checkout puts tens of GB there — and with `*.gguf` in `.gitignore`, `git status` stays clean and you forget. |
 | `hf_bin` | str | `hf`, then `huggingface-cli` | |
+| `aria2_bin` | str | `aria2c` | Used for the Pirate Face swarm download. |
+| `source` | str | `auto` | `auto`, `hf` or `pirateface`. See `--source`. |
 
 ## Machine-specific by nature
 

@@ -107,3 +107,11 @@ lang = "ja"
 # 使う hf コマンド。書かなければ PATH から hf を探し、無ければ
 # huggingface-cli を探します (古い huggingface_hub はこちらの名前)。
 # hf_bin = "/home/you/.local/bin/hf"
+
+# Hugging Face から消えたモデルを Pirate Face (swarm) から落とすときの aria2c。
+# 書かなければ PATH から aria2c を探します。
+# aria2_bin = "/opt/homebrew/bin/aria2c"
+
+# 取得元の既定: "auto" (URL のホストで決め、repo ID だけなら HF を先に試して
+# 無ければ Pirate Face へ) / "hf" / "pirateface"
+# source = "auto"
