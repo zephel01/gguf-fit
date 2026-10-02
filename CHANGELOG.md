@@ -41,6 +41,15 @@ This project has not cut a release yet; `version` in `pyproject.toml` is still
 
 ### Fixed
 
+- **Diffusion-model GGUFs were evaluated as LLMs.** Repos such as
+  Qwen-Image (`general.architecture = qwen_image21`, no `block_count` /
+  `context_length` / vocabulary) printed "could not compute the KV cache size"
+  for every quantization and re-read every header. Language-model detection now
+  looks at the metadata shape rather than a name list, so new diffusion
+  architectures need no update. Such repos are judged by file size against the
+  budget with one header read and a one-line note; mmproj files are still not
+  taken as the main model.
+
 - **GGUFs without `attention.key_length` were rejected as "not the main model".**
   Older converters omit the key (e.g. third-party Qwen2.5 quants, and
   `Qwen/Qwen2.5-0.5B-Instruct-GGUF`), so no KV size was computed and

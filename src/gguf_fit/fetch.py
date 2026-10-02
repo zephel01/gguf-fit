@@ -57,7 +57,8 @@ from ._config import (
     resolve_llama_servers,
     split_repeated,
 )
-from ._ggufhdr import Header, TruncatedGGUF, parse_header
+from ._ggufhdr import (PROJECTOR_ARCHS, Header, TruncatedGGUF, is_language_model,
+                       parse_header)
 from ._messages import DEFAULT_LANG, pad, t, width
 from .plan import (
     DEFAULT_OVERHEAD_GIB,
@@ -297,11 +298,13 @@ def not_the_main_model_reason(rec: dict) -> str | None:
     (実物: key_length の無い Qwen2.5 が 771本/64層で「本体に見えない」と出た)。
 
     * ``"not_lm"``    — 言語モデルではない (mmproj など)
+    * ``"not_llm"``   — 言語モデルではないが**本体**（拡散モデルなど）。
+      KV キャッシュが無いので、サイズだけで判定する
     * ``"no_kv"``     — KV の大きさが出ない (必要なメタデータが無い)
     * ``"too_few"``   — 層数に対してテンソルが少なすぎる (MTP draft など)
     """
     if not rec.get("is_language_model"):
-        return "not_lm"
+        return "not_lm" if rec.get("is_projector", True) else "not_llm"
     blocks = rec.get("block_count") or 0
     if rec["n_tensors"] < max(int(blocks), 1):
         return "too_few"
@@ -501,7 +504,9 @@ def record_from_header(header: Header, filename: str, size_bytes: int,
         "file_type": meta.get("general.file_type"),
         "n_tensors": len(header.tensors),
     }
-    rec["is_language_model"] = rec["architecture"] not in ("clip", "mmproj", None)
+    rec["is_language_model"] = is_language_model(rec["architecture"], meta)
+    #: mmproj/clip か。拡散モデルなど「言語モデルではないが本体」と区別する
+    rec["is_projector"] = rec["architecture"] in (*PROJECTOR_ARCHS, None)
     rec["n_params"] = header.n_params
     for suffix, key in _META_KEYS:
         for name, value in meta.items():
@@ -980,6 +985,11 @@ def _load_records(repo: str, revision: str, targets: list[Candidate],
             header = merge_shard_headers(headers)
         rec = record_from_header(header, cand.files[0], cand.size_bytes, url)
         reason = not_the_main_model_reason(rec) if first_valid_only else None
+        if reason == "not_llm":
+            # 拡散モデルなど。KV を借りる相手ではないが、本体としては正しい。
+            # 採って打ち切る (全量子化に同じ警告を出して全部読み直さない)。
+            # 判定は evaluate() がサイズだけで行う
+            reason = None
         if reason == "no_kv":
             print("!! " + t("fetch_no_kv", lang, file=cand.files[0],
                             missing=", ".join(missing_kv_keys(rec))),
@@ -1178,7 +1188,12 @@ def main() -> int:
     print(render_table(verdicts, lang, chosen_labels))
     print()
 
-    if transferred and recs:
+    if recs and not any(r.get("is_language_model") for r in recs.values()):
+        # 言語モデルではない (拡散モデルなど)。「KV の数字をヘッダから読んだ」
+        # とは書けない。KV が無いことと、判定の根拠を言う
+        arch = next(iter(recs.values())).get("architecture")
+        print(t("fetch_not_llm", lang, arch=arch, mib=transferred / (1024 * 1024)))
+    elif transferred and recs:
         source = ", ".join(sorted(recs))
         print(t("fetch_kv_source" if args.probe == "one" else "fetch_kv_source_all",
                 lang, files=source, mib=transferred / (1024 * 1024)))

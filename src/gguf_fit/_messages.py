@@ -712,6 +712,15 @@ MESSAGES: dict[str, dict[str, str]] = {
               "{missing} が無い)、KV の数字を他の行に流用しませんでした。"
               "次の候補を試します。",
     },
+    #: 拡散モデルなど。LLM ではないので KV キャッシュの概念が無い
+    "fetch_not_llm": {
+        "en": "# architecture '{arch}' is not a language model (diffusion model "
+              "etc.), so there is no KV cache. Judged by file size against the "
+              "budget only ({mib:.1f} MiB of header read).",
+        "ja": "# architecture '{arch}' は言語モデルではありません (拡散モデルなど) "
+              "ので、KV キャッシュはありません。ファイルサイズと予算を比べた"
+              "だけの判定です (ヘッダ {mib:.1f} MiB 読みました)。",
+    },
     "fetch_not_weights": {
         "en": "# {n} root-level file(s) are too small to be weights at this parameter "
               "count and were dropped from the candidates ({names}). imatrix data and "

@@ -1129,5 +1129,100 @@ def test_not_the_main_model_reason_names_each_case():
     assert fetch.not_the_main_model_reason(full) is None
     assert fetch.not_the_main_model_reason({**full, "n_tensors": 2}) == "too_few"
     assert fetch.not_the_main_model_reason({**full, "kv_cache": None}) == "no_kv"
+    # mmproj / clip: 本体ではない
     assert fetch.not_the_main_model_reason(
-        {**full, "is_language_model": False}) == "not_lm"
+        {**full, "is_language_model": False, "is_projector": True}) == "not_lm"
+    # 拡散モデルなど: 言語モデルではないが本体。KV が無いだけ
+    assert fetch.not_the_main_model_reason(
+        {**full, "is_language_model": False, "is_projector": False}) == "not_llm"
+
+
+# --- 拡散モデル (言語モデルではない GGUF) ----------------------------------
+# 実物: abenzerps/Qwen-Image-2.1-Uncensored-GGUF。メタデータは
+# general.architecture と general.file_type だけで、block_count も
+# context_length も語彙も無い。LLM として評価すると全ファイルに
+# 「KV が計算できない」警告が出ていた。
+
+DIFFUSION_META = [
+    ("general.architecture", T_STRING, _gstr("qwen_image21")),
+    ("general.file_type", T_UINT32, _u32(15)),
+]
+#: 4本 x 4096 x 430,000 = 約 7.0B パラメータ
+DIFFUSION_DIMS = (4096, 430_000)
+DIFFUSION_TENSORS = [(f"transformer_blocks.{i}.attn.to_q.weight", 12)
+                     for i in range(4)]
+
+
+def _diffusion_blob() -> bytes:
+    return build_gguf(DIFFUSION_META, DIFFUSION_TENSORS, dims=DIFFUSION_DIMS)
+
+
+def test_a_diffusion_gguf_is_not_a_language_model_but_is_the_main_file():
+    header = _ggufhdr.parse_header(_diffusion_blob())
+    rec = fetch.record_from_header(header, "q.gguf", 4_290_000_000)
+    assert rec["architecture"] == "qwen_image21"
+    assert rec["is_language_model"] is False
+    assert rec["is_projector"] is False
+    assert fetch.not_the_main_model_reason(rec) == "not_llm"
+
+
+def test_an_mmproj_is_still_not_the_main_file():
+    meta = [("general.architecture", T_STRING, _gstr("clip"))]
+    header = _ggufhdr.parse_header(build_gguf(meta, DIFFUSION_TENSORS))
+    rec = fetch.record_from_header(header, "mmproj.gguf", 900_000_000)
+    assert rec["is_language_model"] is False
+    assert fetch.not_the_main_model_reason(rec) == "not_lm"
+
+
+def test_language_model_detection_is_by_shape_not_by_name():
+    # 知らない architecture 名でも、block_count / context_length があれば LM
+    assert _ggufhdr.is_language_model("brandnew", ["brandnew.block_count"])
+    assert _ggufhdr.is_language_model("brandnew", ["brandnew.context_length"])
+    assert _ggufhdr.is_language_model("brandnew", ["tokenizer.ggml.tokens"])
+    assert not _ggufhdr.is_language_model(
+        "qwen_image21", ["general.architecture", "general.file_type"])
+    assert not _ggufhdr.is_language_model("clip", ["clip.block_count"])
+    assert not _ggufhdr.is_language_model(None, ["x.block_count"])
+
+
+def test_diffusion_repo_gives_no_kv_warning_and_reads_one_header(
+        monkeypatch, capsys):
+    blob = _diffusion_blob()
+    reads: list[str] = []
+
+    def fake_fetch_header(url):
+        reads.append(url.rsplit("/", 1)[-1])
+        return _ggufhdr.parse_header(blob), len(blob)
+    monkeypatch.setattr(fetch, "fetch_header", fake_fetch_header)
+    body, _p, _e = fetch.group_files([
+        {"rfilename": f"q-{q}.gguf", "size": size} for q, size in
+        (("Q8_0", 7_590_000_000), ("Q4_K_M", 4_600_000_000),
+         ("Q4_0", 4_150_000_000))])
+    recs, _ = fetch._load_records("org/repo", "main", body, "en",
+                                  first_valid_only=True)
+    assert len(recs) == 1 and len(reads) == 1      # 先頭で打ち切る
+    err = capsys.readouterr().err
+    assert "could not compute the KV cache size" not in err
+    assert "does not look like the main model" not in err
+
+
+def test_diffusion_repo_end_to_end_is_judged_by_size(
+        hf_server, monkeypatch, tmp_path, capsys):
+    monkeypatch.chdir(tmp_path)
+    _Handler.blobs = {f"q-{q}.gguf": _diffusion_blob()
+                      for q in ("Q4_K_M", "Q8_0")}
+    _Handler.api = {"siblings": [
+        {"rfilename": "q-Q4_K_M.gguf", "size": 4_600_000_000},
+        {"rfilename": "q-Q8_0.gguf", "size": 7_590_000_000}]}
+    monkeypatch.setattr(fetch._hardware, "detect", lambda _b: _no_gpu_machine())
+    # ディスクの空きは環境に依存させない (実機の空きで結果が変わらないように)
+    monkeypatch.setattr(fetch, "disk_free_gib", lambda _p: 1000.0)
+    monkeypatch.setattr("sys.argv", [
+        "gguf-fetch", "org/repo", "--vram", "48", "--all", "--dry-run"])
+    assert fetch.main() == 0
+    captured = capsys.readouterr()
+    assert "could not compute the KV cache size" not in captured.err
+    assert "not a language model" in captured.out
+    assert "qwen_image21" in captured.out
+    assert "come from the header" not in captured.out    # KV の出所を装わない
+    assert "q-Q4_K_M.gguf" in captured.out and "q-Q8_0.gguf" in captured.out
