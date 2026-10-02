@@ -223,3 +223,23 @@ def parse_header(data: bytes, want: tuple[str, ...] | None = None) -> Header:
         tensors.append((str(name), type_name(code)))
 
     return Header(version, metadata, tensors, cur.i, n_params)
+
+
+#: 言語モデルではない GGUF の architecture (mmproj など)。KV は無い
+PROJECTOR_ARCHS = ("clip", "mmproj")
+
+
+def is_language_model(arch: str | None, keys: Any) -> bool:
+    """言語モデルの GGUF か。``keys`` はメタデータのキー名の集まり.
+
+    名前の一覧では**追いつかない**。拡散モデル (Qwen-Image / FLUX / SD 系など)
+    の GGUF はどんどん増え、architecture 名も ``qwen_image21`` のように
+    バージョンごとに変わる。そこで**形で見る**: 言語モデルなら必ず
+    ``<arch>.block_count`` か ``<arch>.context_length`` (または語彙) を持つ。
+    どれも無いものは KV キャッシュを持たず、LLM として評価すると
+    「KV が出せない」警告を全ファイルに出すだけになる。
+    """
+    if arch is None or arch in PROJECTOR_ARCHS:
+        return False
+    return any(k.endswith((".block_count", ".context_length"))
+               or k.startswith("tokenizer.ggml.") for k in keys)

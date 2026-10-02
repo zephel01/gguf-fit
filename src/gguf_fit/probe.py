@@ -51,6 +51,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from ._config import load_config, render_show_config, resolve
+from ._ggufhdr import is_language_model
 from ._messages import DEFAULT_LANG, t
 
 
@@ -274,7 +275,8 @@ def probe(path: Path) -> dict:
         "file_type": _kv(r, "general.file_type"),
         "n_tensors": len(r.tensors),
     }
-    out["is_language_model"] = out["architecture"] not in ("clip", "mmproj", None)
+    out["is_language_model"] = is_language_model(
+        out["architecture"], [f.name for f in r.fields.values()])
 
     for suffix, key in (
         (".context_length", "context_length"),
