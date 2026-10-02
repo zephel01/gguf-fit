@@ -343,6 +343,26 @@ BF16       66.19G        入らない         入らない   入らない
 設定ファイルに `models_dir` を書いておけば `--dir` は要りません。`HF_ENDPOINT` と
 `HF_TOKEN` を見るので、ミラーでも gated リポジトリでも動きます。
 
+**Hugging Face からモデルが消えたとき**: [Pirate Face](https://pirateface.co) は GGUF の
+リポジトリを、Hugging Face のリビジョン・swarm の magnet・ファイルごとの SHA-256 と
+一緒に索引しています。その URL を渡すか、`owner/name` だけ渡して Hugging Face が
+「無い」と答えたときに、`gguf-fetch` が自分で切り替えます (`--source hf|pirateface|auto`)。
+
+```
+gguf-fetch https://pirateface.co/mradermacher/Ornith-1.5-9B-uncensored-GGUF --fit
+```
+
+* **ダウンロード**: 選んだファイルだけを `aria2c` で swarm から取り (`--via swarm`)、
+  Pirate Face の SHA-256 と照合します。`--via auto` (既定) は swarm が失敗したら、固定した
+  リビジョンの `hf download` に切り替えます。`--via hf` は swarm を使いません。
+  Pirate Face の web-seed は Hugging Face へのリダイレクトなので、モデルが消えたあとに
+  効くのは swarm だけです。
+* **判定**: Hugging Face にそのリビジョンが残っているうちは、サイズも GGUF ヘッダも
+  今までどおりそちらから読みます。消えた後はヘッダが読めないので、**ファイルサイズだけの
+  判定**になり (サイズは Pirate Face の 0.1 GB 刻み)、そう表示します。KV キャッシュと
+  最大 ctx は、落としてから測るまで分かりません。
+* swarm には `aria2c` が要ります (`brew install aria2` / `apt install aria2`)。
+
 </details>
 
 <details open>

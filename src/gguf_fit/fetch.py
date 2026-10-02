@@ -43,12 +43,15 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, NamedTuple
 
 from . import _hardware
+from . import _pirateface as pf
 from ._config import (
     drop_detectable,
     load_config,
@@ -135,8 +138,11 @@ QUANT_RE = re.compile(
 #: 「本体ではないサブディレクトリ」との区別がこれ1本で付く。
 QUANT_DIR_RE = re.compile(_QUANT_ALT, re.IGNORECASE)
 
-#: ビジョン投影（mmproj）。本体とは別枠で扱う
-MMPROJ_RE = re.compile(r"(^|/)mmproj", re.IGNORECASE)
+#: ビジョン投影（mmproj）。本体とは別枠で扱う。
+#: 実物: ``mmproj-F16.gguf`` のほか、mradermacher は ``<model>.mmproj-Q8_0.gguf``
+#: と**モデル名の後ろ**に付ける。先頭・ ``/`` 直後だけを見ていると本体の候補に
+#: 混ざり、同じ量子化ラベル (Q8_0, f16) が衝突して表の名前が長くなっていた
+MMPROJ_RE = re.compile(r"(^|[/.\-_])mmproj", re.IGNORECASE)
 
 #: 投機デコード用の draft / MTP ファイル。本体と**組にして**使うもの。
 #: 実物: unsloth の ``MTP/mtp-Qwen3.8-27B-Q4_0.gguf``
@@ -906,6 +912,12 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--json", action="store_true", help=t("help_fetch_json", DEFAULT_LANG))
     ap.add_argument("--hf-bin", default=None, dest="hf_bin",
                     help=t("help_hf_bin", DEFAULT_LANG))
+    ap.add_argument("--source", choices=["auto", "hf", "pirateface"], default=None,
+                    help=t("help_source", DEFAULT_LANG))
+    ap.add_argument("--via", choices=["auto", "swarm", "hf"], default="auto",
+                    help=t("help_via", DEFAULT_LANG))
+    ap.add_argument("--aria2-bin", default=None, dest="aria2_bin",
+                    help=t("help_aria2_bin", DEFAULT_LANG))
     ap.add_argument("--llama-server", action="append", default=None,
                     dest="llama_server", help=t("help_llama_server", DEFAULT_LANG))
     ap.add_argument("--lang", default=None, choices=["en", "ja"],
@@ -1029,6 +1041,196 @@ def _selection(args, body: list[Candidate], verdicts: list[Verdict],
     return None
 
 
+# --------------------------------------------------------------------------
+# 取得元: Hugging Face / Pirate Face
+# --------------------------------------------------------------------------
+
+#: HF が「無い」と答えるときの HTTP ステータス。匿名だと、存在しない・
+#: 削除されたリポジトリは 404 ではなく 401 で返ってくる
+_GONE_CODES = (401, 403, 404, 410, 451)
+
+
+def _source_is_gone(exc: BaseException) -> bool:
+    """HF に繋がったうえで「そのリポジトリは無い」と返されたか.
+
+    ネットワーク断 (``URLError``) は含めない。HF が消したのではなく、こちらが
+    繋がっていないだけなので、別の取得元に切り替える理由にならない。
+    """
+    return isinstance(exc, urllib.error.HTTPError) and exc.code in _GONE_CODES
+
+
+class Listing(NamedTuple):
+    """ファイル一覧と、それを**どこから取ったか**."""
+
+    source: str                       # "hf" / "pirateface"
+    revision: str
+    info: dict                        # HF の API と同じ形 (siblings)
+    page: pf.PageInfo | None          # pirateface のときだけ
+    hf_alive: bool                    # ヘッダを HF から読めるか
+
+
+def _listing_from_pirateface(repo: str, lang: str) -> Listing:
+    """Pirate Face のページから一覧を作る.
+
+    HF が生きていれば、ピン留めされたリビジョンで HF の API も引く (サイズが
+    正確になり、GGUF ヘッダも読める)。引けなければページの値で続ける。
+    その場合サイズは 0.1 GB 刻みで、ヘッダは読めないので判定はサイズだけ。
+    """
+    try:
+        page = pf.fetch_page(repo)
+    except pf.PageError as exc:
+        sys.exit(t("pf_page_failed", lang, repo=repo, url=pf.page_url(repo),
+                   err=exc))
+    try:
+        info = repo_info(repo, page.revision)
+        alive = True
+    except (OSError, ValueError) as exc:
+        print("# " + t("pf_hf_gone", lang, repo=repo, rev=page.revision[:8],
+                        err=exc), file=sys.stderr)
+        info = {"siblings": pf.siblings_from_page(page)}
+        alive = False
+    return Listing("pirateface", page.revision, info, page, alive)
+
+
+def _resolve_via(via: str, aria2: str | None, hf: str | None,
+                 has_magnet: bool) -> str | None:
+    """``--via`` から、実際に使う経路を決める。使えるものが無ければ ``None``."""
+    if via == "swarm":
+        return "swarm" if (aria2 and has_magnet) else None
+    if via == "hf":
+        return "hf" if hf else None
+    if aria2 and has_magnet:
+        return "swarm"
+    return "hf" if hf else None
+
+
+def _run_swarm(aria2: str, page: pf.PageInfo, files: list[str], dest: Path,
+               lang: str) -> int:
+    """magnet から .torrent を取り、選んだファイルだけ swarm から落とす."""
+    assert page.magnet  # 呼び出し側で確認済み
+    # 前回までに落とし終えて、SHA-256 が記録と合うものは落とし直さない
+    # (同じコマンドをもう一度流しても、数 GB を取り直さない)
+    have, _bad, _skipped = pf.verify(dest, page, files)
+    if have:
+        print(t("pf_already", lang, n=len(have), names=", ".join(have)))
+        files = [f for f in files if f not in have]
+        if not files:
+            return 0
+    with tempfile.TemporaryDirectory(prefix="gguf-fit-") as tmp:
+        work = Path(tmp)
+        print(t("pf_metadata", lang, sec=pf.METADATA_TIMEOUT_S), file=sys.stderr)
+        res = subprocess.run(pf.metadata_command(aria2, page.magnet, work),
+                             check=False)
+        torrents = sorted(work.glob("*.torrent"))
+        if res.returncode != 0 or not torrents:
+            print("!! " + t("pf_metadata_failed", lang, code=res.returncode),
+                  file=sys.stderr)
+            return res.returncode or 1
+        try:
+            top, tfiles = pf.torrent_files(torrents[0].read_bytes())
+        except (OSError, ValueError) as exc:
+            print("!! " + t("pf_torrent_unreadable", lang, err=exc), file=sys.stderr)
+            return 1
+        indices, missing = pf.select_indices(tfiles, files)
+        if missing:
+            print("!! " + t("pf_not_in_torrent", lang, names=", ".join(missing)),
+                  file=sys.stderr)
+            return 1
+        dest.mkdir(parents=True, exist_ok=True)
+        cmd = pf.download_command(aria2, torrents[0], indices, dest)
+        print(shlex.join(cmd))
+        res = subprocess.run(cmd, check=False)
+        if res.returncode != 0:
+            return res.returncode
+    if len(tfiles) > 1:
+        # aria2 は <dir>/<torrent の名前>/<path> に置く。hf download と同じ
+        # 配置 (dest 直下) に揃える。後続の gguf-probe dest/*.gguf が通る
+        pf.flatten(dest, top, files)
+        if (dest / top).is_dir():
+            # 選ばなかったファイルの欠片 (piece を共有する端)。消さずに知らせる
+            print(t("pf_leftover", lang, path=dest / top), file=sys.stderr)
+    ok, bad, skipped = pf.verify(dest, page, files)
+    if ok:
+        print(t("pf_verify_ok", lang, n=len(ok)))
+    if skipped:
+        print(t("pf_verify_skipped", lang, names=", ".join(skipped)),
+              file=sys.stderr)
+    if bad:
+        print("!! " + t("pf_verify_bad", lang, names=", ".join(bad)),
+              file=sys.stderr)
+        return 1
+    return 0
+
+
+def _download_pirateface(args, listing: Listing, files: list[str], dest: Path,
+                         aria2: str | None, hf: str | None, lang: str,
+                         ) -> int | None:
+    """Pirate Face 経由のダウンロード。``None`` は成功 (呼び出し側が後始末へ進む).
+
+    swarm (magnet + aria2c) が主経路。HF が生きていれば ``hf download`` を
+    ピン留めしたリビジョンで使える。``--via auto`` は swarm を先に試し、
+    失敗したら HF に切り替える。
+    """
+    page = listing.page
+    assert page is not None
+    has_magnet = bool(page.magnet)
+    chosen = _resolve_via(args.via, aria2, hf, has_magnet)
+
+    # 実行するコマンドを先に見せる (--dry-run のときはここで終わる)
+    plan_via = chosen or (
+        args.via if args.via != "auto" else ("swarm" if has_magnet else "hf"))
+    print()
+    print(t("pf_via", lang, via=plan_via))
+    if plan_via == "swarm":
+        if has_magnet:
+            print(shlex.join(pf.metadata_command(
+                aria2 or "aria2c", page.magnet or "", Path("<tmp>"))))
+            print("# " + t("pf_second_step", lang))
+            print(shlex.join(pf.download_command(
+                aria2 or "aria2c", Path("<tmp>/<infohash>.torrent"),
+                "<n,...>", dest)))
+    else:
+        print(shlex.join(download_command(hf or "hf", args.repo, files, dest,
+                                          listing.revision)))
+    if args.dry_run:
+        return 0
+
+    if chosen is None:
+        if args.via == "swarm" and not has_magnet:
+            print(t("pf_no_magnet", lang), file=sys.stderr)
+        elif args.via == "swarm":
+            print(t("pf_no_aria2", lang), file=sys.stderr)
+        elif args.via == "hf":
+            print(t("fetch_no_hf", lang), file=sys.stderr)
+        else:
+            print(t("pf_no_tool", lang), file=sys.stderr)
+        return 127
+    if not args.yes:
+        try:
+            answer = input("\n" + t("fetch_confirm", lang)).strip().lower()
+        except EOFError:
+            answer = ""
+        if answer not in ("y", "yes"):
+            print(t("fetch_cancelled", lang))
+            return 0
+
+    dest.mkdir(parents=True, exist_ok=True)
+    if chosen == "swarm":
+        assert aria2 is not None
+        rc = _run_swarm(aria2, page, files, dest, lang)
+        if rc == 0:
+            return None
+        if args.via == "auto" and hf:
+            print("!! " + t("pf_fallback_hf", lang, code=rc), file=sys.stderr)
+        else:
+            return rc
+    assert hf is not None
+    cmd = download_command(hf, args.repo, files, dest, listing.revision)
+    print(shlex.join(cmd))
+    result = subprocess.run(cmd, check=False)
+    return None if result.returncode == 0 else result.returncode
+
+
 def main() -> int:
     ap = _build_parser()
     args = ap.parse_args()
@@ -1053,6 +1255,8 @@ def main() -> int:
     r_overhead = resolve("overhead", args.overhead, cfg, DEFAULT_OVERHEAD_GIB)
     r_dir = resolve("models_dir", args.models_dir, cfg, ".")
     r_hf_bin = resolve("hf_bin", args.hf_bin, cfg)
+    r_aria2 = resolve("aria2_bin", args.aria2_bin, cfg)
+    r_source = resolve("source", args.source, cfg, "auto")
     lang = r_lang.value
 
     if args.show_config:
@@ -1061,7 +1265,8 @@ def main() -> int:
         print(render_show_config(
             {"lang": r_lang, "vram": r_vram, "overhead": r_overhead,
              "device": r_device, "llama_servers": r_llama,
-             "models_dir": r_dir, "hf_bin": r_hf_bin}, cfg_path))
+             "models_dir": r_dir, "hf_bin": r_hf_bin,
+             "aria2_bin": r_aria2, "source": r_source}, cfg_path))
         print()
         print(_hardware.render(hw))
         if not hw.gpus:
@@ -1085,10 +1290,40 @@ def main() -> int:
                                 r_device.source, lang):
         print(line, file=sys.stderr)
 
+    # repo は ``owner/name`` のほか、huggingface.co / pirateface.co の URL でもよい。
+    # URL のホストが取得元を決める (--source / config の指定がなければ)
     try:
-        info = repo_info(args.repo, args.revision)
-    except (OSError, ValueError) as exc:
-        sys.exit(t("fetch_repo_failed", lang, repo=args.repo, err=exc))
+        url_kind, args.repo = pf.parse_repo_arg(args.repo)
+    except ValueError as exc:
+        sys.exit(t("pf_bad_url", lang, err=exc))
+    wanted_source = str(r_source.value)
+    if wanted_source == "auto":
+        wanted_source = url_kind or "hf"
+        # URL を渡していない repo ID は HF を先に試し、「無い」と返されたときだけ
+        # Pirate Face に切り替える (HF が生きているあいだは今までどおり)
+        may_fall_back = url_kind is None
+    else:
+        may_fall_back = False
+
+    if wanted_source == "pirateface":
+        listing = _listing_from_pirateface(args.repo, lang)
+    else:
+        try:
+            listing = Listing("hf", args.revision,
+                              repo_info(args.repo, args.revision), None, True)
+        except (OSError, ValueError) as exc:
+            if not (may_fall_back and _source_is_gone(exc)):
+                sys.exit(t("fetch_repo_failed", lang, repo=args.repo, err=exc))
+            print("# " + t("pf_fallback", lang, repo=args.repo, err=exc),
+                  file=sys.stderr)
+            listing = _listing_from_pirateface(args.repo, lang)
+    info = listing.info
+    if listing.source == "pirateface":
+        # リビジョンは Pirate Face が記録した commit に固定する。main ではない
+        args.revision = listing.revision
+        if not listing.hf_alive:
+            # HF から GGUF ヘッダを読めない。ヘッダ無しの粗い判定にする
+            args.probe = "none"
 
     body, projs, extras = group_files(info.get("siblings") or [])
     if not body:
@@ -1156,7 +1391,13 @@ def main() -> int:
     if args.json:
         print(json.dumps({
             "repo": args.repo,
+            "source": listing.source,
             "revision": args.revision,
+            # pirateface のときだけ意味がある。サイズが 0.1 GB 刻みの概算か、
+            # swarm の magnet があるか
+            "sizes_approximate": listing.source == "pirateface"
+                                 and not listing.hf_alive,
+            "magnet": listing.page.magnet if listing.page else None,
             "vram_gib": vram,
             "overhead_gib": overhead,
             "header_bytes_transferred": transferred,
@@ -1180,6 +1421,10 @@ def main() -> int:
         return 0
 
     print(t("fetch_header_line", lang, repo=args.repo, rev=args.revision))
+    if listing.source == "pirateface":
+        print(t("pf_source_line", lang, url=pf.page_url(args.repo),
+                swarm=t("pf_swarm_yes" if listing.page and listing.page.magnet
+                        else "pf_swarm_no", lang)))
     if vram is not None:
         print(t("fetch_budget", lang, vram=vram, overhead=overhead,
                 kv=args.kv, min_ctx=args.min_ctx))
@@ -1203,6 +1448,8 @@ def main() -> int:
         print(t("fetch_no_usable_header", lang, mib=transferred / (1024 * 1024)))
     else:
         print(t("fetch_size_only", lang))
+    if listing.source == "pirateface" and not listing.hf_alive:
+        print(t("pf_sizes_rounded", lang))
     if projs:
         print(t("fetch_mmproj_found", lang, n=len(projs),
                 gib=projs[0].size_gib, name=projs[0].files[0]))
@@ -1253,31 +1500,38 @@ def main() -> int:
             print(t("fetch_disk_ok", lang, free=free))
 
     binary = hf_binary(str(r_hf_bin.value) if r_hf_bin.value else None)
-    cmd = download_command(binary or "hf", args.repo, files, dest, args.revision)
-    print()
-    print(shlex.join(cmd))
-
-    if args.dry_run:
-        # 容量が足りないことは伝わっているので、終了コードには残す
-        return 1 if short_on_disk else 0
-    if binary is None:
+    if listing.source == "pirateface":
+        aria2 = shutil.which(str(r_aria2.value) if r_aria2.value else "aria2c")
+        rc = _download_pirateface(args, listing, files, dest, aria2, binary, lang)
+        if rc is not None:
+            # 容量が足りないことは伝わっているので、--dry-run でも終了コードに残す
+            return 1 if (args.dry_run and short_on_disk) else rc
+    else:
+        cmd = download_command(binary or "hf", args.repo, files, dest, args.revision)
         print()
-        print(t("fetch_no_hf", lang), file=sys.stderr)
-        return 127
-    if not args.yes:
-        try:
-            answer = input("\n" + t("fetch_confirm", lang)).strip().lower()
-        except EOFError:
-            answer = ""
-        if answer not in ("y", "yes"):
-            print(t("fetch_cancelled", lang))
-            return 0
+        print(shlex.join(cmd))
 
-    dest.mkdir(parents=True, exist_ok=True)
-    # 引数はリストで渡している (shell=False)。ファイル名は API が返したものだけ
-    result = subprocess.run(cmd, check=False)
-    if result.returncode != 0:
-        return result.returncode
+        if args.dry_run:
+            # 容量が足りないことは伝わっているので、終了コードには残す
+            return 1 if short_on_disk else 0
+        if binary is None:
+            print()
+            print(t("fetch_no_hf", lang), file=sys.stderr)
+            return 127
+        if not args.yes:
+            try:
+                answer = input("\n" + t("fetch_confirm", lang)).strip().lower()
+            except EOFError:
+                answer = ""
+            if answer not in ("y", "yes"):
+                print(t("fetch_cancelled", lang))
+                return 0
+
+        dest.mkdir(parents=True, exist_ok=True)
+        # 引数はリストで渡している (shell=False)。ファイル名は API が返したものだけ
+        result = subprocess.run(cmd, check=False)
+        if result.returncode != 0:
+            return result.returncode
 
     # 落としたら次は測る番。**ここでの数字はまだ見積り**なので、そう言っておく
     print()

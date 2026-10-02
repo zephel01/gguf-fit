@@ -555,6 +555,24 @@ MESSAGES: dict[str, dict[str, str]] = {
         "en": "the hf executable to use (default: hf, then huggingface-cli)",
         "ja": "使う hf コマンド (既定: hf、無ければ huggingface-cli)",
     },
+    "help_source": {
+        "en": "where to read the file list from: hf, pirateface, or auto (default: "
+              "from the URL; a bare repo id tries Hugging Face first and switches to "
+              "Pirate Face if Hugging Face no longer has it)",
+        "ja": "ファイル一覧の取得元: hf / pirateface / auto (既定 auto: URL のホストで"
+              "決める。repo ID だけなら Hugging Face を先に試し、無ければ Pirate Face へ)",
+    },
+    "help_via": {
+        "en": "how to download from Pirate Face: swarm (magnet + aria2c), hf "
+              "(hf download at the pinned revision), or auto (swarm first, hf if it "
+              "fails)",
+        "ja": "Pirate Face のときの落とし方: swarm (magnet + aria2c) / hf (固定した"
+              "リビジョンで hf download) / auto (swarm を先に、だめなら hf)",
+    },
+    "help_aria2_bin": {
+        "en": "the aria2c executable to use (default: aria2c)",
+        "ja": "使う aria2c コマンド (既定: aria2c)",
+    },
 
     # ---- fetch: 表と判定 ----
     "fetch_col_verdict": {
@@ -789,6 +807,119 @@ MESSAGES: dict[str, dict[str, str]] = {
               "or run the command above yourself.",
         "ja": "hf が見つかりません。`pip install -U huggingface_hub` で入れるか、"
               "上のコマンドを自分で実行してください。",
+    },
+    # ---- fetch: Pirate Face (swarm) ----
+    "pf_bad_url": {
+        "en": "cannot read the repo URL: {err} (use owner/name, or a huggingface.co / "
+              "pirateface.co URL)",
+        "ja": "repo の URL を読めません: {err} (owner/name か、huggingface.co / "
+              "pirateface.co の URL を指定してください)",
+    },
+    "pf_fallback": {
+        "en": "{repo} is no longer available on Hugging Face ({err}); trying Pirate "
+              "Face instead.",
+        "ja": "{repo} は Hugging Face で見つかりません ({err})。Pirate Face を試します。",
+    },
+    "pf_page_failed": {
+        "en": "could not read {repo} on Pirate Face ({url}): {err}",
+        "ja": "Pirate Face で {repo} を読めませんでした ({url}): {err}",
+    },
+    "pf_hf_gone": {
+        "en": "Hugging Face does not return {repo} at revision {rev} ({err}). Using the "
+              "file list recorded by Pirate Face.",
+        "ja": "Hugging Face が {repo} のリビジョン {rev} を返しません ({err})。"
+              "Pirate Face が記録したファイル一覧を使います。",
+    },
+    "pf_source_line": {
+        "en": "source: Pirate Face ({url}) / swarm: {swarm}",
+        "ja": "取得元: Pirate Face ({url}) / swarm: {swarm}",
+    },
+    "pf_swarm_yes": {"en": "magnet listed", "ja": "magnet あり"},
+    "pf_swarm_no": {"en": "no magnet yet", "ja": "magnet なし"},
+    "pf_sizes_rounded": {
+        "en": "# Pirate Face lists sizes to 0.1 GB, and the GGUF header cannot be read "
+              "without Hugging Face, so the verdict above is by file size only: KV "
+              "cache and max ctx are unknown. Measure after downloading.",
+        "ja": "# Pirate Face のサイズは 0.1 GB 刻みで、Hugging Face が無いと GGUF の"
+              "ヘッダも読めません。上の判定はファイルサイズだけの粗いものです "
+              "(KV キャッシュと最大 ctx は不明)。落としてから測ってください。",
+    },
+    "pf_via": {
+        "en": "download via: {via}",
+        "ja": "ダウンロード経路: {via}",
+    },
+    "pf_second_step": {
+        "en": "then, with the file numbers read from the .torrent:",
+        "ja": "続けて、.torrent から読んだファイル番号で:",
+    },
+    "pf_metadata": {
+        "en": "fetching the torrent metadata from the swarm (gives up after {sec}s "
+              "without peers)...",
+        "ja": "swarm から torrent のメタデータを取得します (peer が居なければ "
+              "{sec} 秒で諦めます)...",
+    },
+    "pf_metadata_failed": {
+        "en": "could not get the torrent metadata (aria2c exit {code}). No peers "
+              "answered, or the swarm is empty.",
+        "ja": "torrent のメタデータを取得できませんでした (aria2c 終了コード {code})。"
+              "peer が応答しないか、swarm が空です。",
+    },
+    "pf_torrent_unreadable": {
+        "en": "could not read the .torrent: {err}",
+        "ja": ".torrent を読めませんでした: {err}",
+    },
+    "pf_not_in_torrent": {
+        "en": "not in the torrent: {names}",
+        "ja": "torrent に含まれていません: {names}",
+    },
+    "pf_already": {
+        "en": "already downloaded and matching the recorded SHA-256, skipping: {names}",
+        "ja": "ダウンロード済みで SHA-256 も記録と一致するため省きます: {names}",
+    },
+    "pf_leftover": {
+        "en": "{path} still holds fragments of files you did not select (a torrent "
+              "piece can span two files). They are not usable models; delete the "
+              "directory when you like.",
+        "ja": "{path} に、選ばなかったファイルの欠片が残っています (1つの piece が"
+              "2つのファイルにまたがるため)。モデルとしては使えないので、"
+              "不要ならディレクトリごと消してください。",
+    },
+    "pf_verify_ok": {
+        "en": "SHA-256 matches the value recorded by Pirate Face: {n} file(s).",
+        "ja": "SHA-256 が Pirate Face の記録と一致しました: {n} ファイル。",
+    },
+    "pf_verify_skipped": {
+        "en": "SHA-256 not checked (no recorded value): {names}",
+        "ja": "SHA-256 は照合していません (記録なし): {names}",
+    },
+    "pf_verify_bad": {
+        "en": "SHA-256 does NOT match: {names}. Do not use these files; delete and "
+              "download again.",
+        "ja": "SHA-256 が一致しません: {names}。使わずに、消して落とし直してください。",
+    },
+    "pf_fallback_hf": {
+        "en": "the swarm download failed (exit {code}); falling back to hf download "
+              "at the pinned revision.",
+        "ja": "swarm からの取得に失敗しました (終了コード {code})。固定したリビジョンで "
+              "hf download に切り替えます。",
+    },
+    "pf_no_magnet": {
+        "en": "no magnet is listed for this model yet (no seeder has packaged it). "
+              "Use --via hf while Hugging Face still has it.",
+        "ja": "このモデルにはまだ magnet がありません (seeder が未登録)。Hugging Face に"
+              "残っているあいだは --via hf を使ってください。",
+    },
+    "pf_no_aria2": {
+        "en": "aria2c was not found. Install aria2 (for example `brew install aria2` "
+              "or `apt install aria2`), or use --via hf.",
+        "ja": "aria2c が見つかりません。aria2 を入れるか (`brew install aria2` / "
+              "`apt install aria2` など)、--via hf を使ってください。",
+    },
+    "pf_no_tool": {
+        "en": "neither aria2c nor hf was found. Install aria2 (swarm, works even if "
+              "Hugging Face removed the model) or `pip install -U huggingface_hub`.",
+        "ja": "aria2c も hf も見つかりません。aria2 (swarm。Hugging Face から消えても"
+              "落とせる) か `pip install -U huggingface_hub` を入れてください。",
     },
     "fetch_repo_failed": {
         "en": "could not read {repo}: {err}",

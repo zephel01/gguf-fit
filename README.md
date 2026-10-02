@@ -329,6 +329,25 @@ Downloading is `hf download`'s job — this hands it a file list and gets out of
 Set `models_dir` in the config file to stop typing `--dir`. `HF_ENDPOINT` and `HF_TOKEN`
 are honoured, so mirrors and gated repos work.
 
+**When Hugging Face no longer has the model**: [Pirate Face](https://pirateface.co) indexes
+GGUF repos with the Hugging Face revision, a swarm magnet and per-file SHA-256. Pass its URL,
+or a bare `owner/name` — if Hugging Face answers "not found", `gguf-fetch` switches over by
+itself (`--source hf|pirateface|auto`).
+
+```
+gguf-fetch https://pirateface.co/mradermacher/Ornith-1.5-9B-uncensored-GGUF --fit
+```
+
+* **Download**: the selected files only, from the swarm with `aria2c` (`--via swarm`), then
+  checked against Pirate Face's SHA-256. `--via auto` (default) falls back to `hf download`
+  at the pinned revision if the swarm fails; `--via hf` skips the swarm. A Pirate Face
+  web-seed is just a redirect to Hugging Face, so only the swarm works once the model is gone.
+* **Verdict**: while Hugging Face still has the revision, sizes and the GGUF header come from
+  there as usual. Once it is gone the header cannot be read, so the verdict is by file size
+  only (sizes are Pirate Face's 0.1 GB-rounded figures) and says so; KV cache and max ctx are
+  unknown until you measure after downloading.
+* Needs `aria2c` for the swarm (`brew install aria2` / `apt install aria2`).
+
 </details>
 
 <details open>

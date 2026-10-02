@@ -77,6 +77,9 @@ With no mode flag it prints the verdict table and downloads nothing.
 | `-y`, `--yes` | off | Skip the confirmation. |
 | `--json` | off | Candidates, verdicts, bpw and the selection as JSON. |
 | `--hf-bin PATH` | `hf`, then `huggingface-cli` | Which executable runs the download. |
+| `--source {auto,hf,pirateface}` | `auto` (or `source`) | Where the file list comes from. `auto`: a `huggingface.co` / `pirateface.co` URL picks its own host; a bare `owner/name` tries Hugging Face and switches to Pirate Face only when Hugging Face answers 401/403/404/410/451 (not on a network error). |
+| `--via {auto,swarm,hf}` | `auto` | Pirate Face only. `swarm`: magnet + `aria2c`, selected files only, SHA-256 checked. `hf`: `hf download` at the pinned revision. `auto`: swarm, then `hf` if it fails. A file that already matches its recorded SHA-256 is not downloaded again. |
+| `--aria2-bin PATH` | `aria2c` (or `aria2_bin`) | Which `aria2c` runs the swarm download. |
 | `--refresh` | off | Ignore `vram`/`threads`/`device` in the config file and re-detect. |
 
 ### What it refuses to do

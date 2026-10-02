@@ -9,6 +9,15 @@ This project has not cut a release yet; `version` in `pyproject.toml` is still
 
 ### Added
 
+- **`gguf-fetch` can download from Pirate Face** (`--source`, `--via`, `--aria2-bin`),
+  for models Hugging Face has removed. A `pirateface.co` URL, or a bare `owner/name` that
+  Hugging Face answers 401/403/404/410/451 for, reads the file list, pinned revision, magnet
+  and per-file SHA-256 from the Pirate Face page and downloads only the selected files from
+  the swarm with `aria2c`, then verifies them. Pirate Face's web-seed turned out to be a
+  302 to Hugging Face at the pinned commit, so it cannot survive a removal; `--via auto`
+  uses it only as a fallback (`hf download --revision <sha>`). While Hugging Face still has
+  the revision the verdict is unchanged; without it the verdict is by file size only and
+  says so. JSON gained `source`, `magnet`, `sizes_approximate`.
 - **`gguf-fetch`** — a fourth command. Downloads GGUF files from Hugging Face,
   but decides which ones fit **before** downloading them: the repo listing costs
   a few KB, one GGUF header comes over an HTTP `Range` request (~12 MiB), and
@@ -41,6 +50,9 @@ This project has not cut a release yet; `version` in `pyproject.toml` is still
 
 ### Fixed
 
+- **`mmproj` named after the model** (mradermacher: `<model>.mmproj-Q8_0.gguf`) was read
+  as a weights candidate, so `Q8_0` and `f16` collided with the projector's labels and the
+  table showed full file names. It is now recognised as a vision projector anywhere in the name.
 - **Diffusion-model GGUFs were evaluated as LLMs.** Repos such as
   Qwen-Image (`general.architecture = qwen_image21`, no `block_count` /
   `context_length` / vocabulary) printed "could not compute the KV cache size"
