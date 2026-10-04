@@ -7,11 +7,13 @@ are the reference behind it.
 | | |
 | :-- | :-- |
 | [commands.md](commands.md) | Every flag of the four commands, with defaults and the reason for each default |
+| [pirateface.md](pirateface.md) | Installing and using `gguf-fetch` with Pirate Face / the swarm (`aria2c`) for models Hugging Face has removed |
 | [configuration.md](configuration.md) | Every `gguf-fit.toml` key, the precedence chain, environment variables |
 | [architecture.md](architecture.md) | Module map, the pure core, which boundaries are load-bearing |
 | [../CHANGELOG.md](../CHANGELOG.md) | What changed and when |
 
 Japanese: [README.ja.md](README.ja.md) · [commands.ja.md](commands.ja.md) ·
+[pirateface.ja.md](pirateface.ja.md) ·
 [configuration.ja.md](configuration.ja.md) ·
 [architecture.ja.md](architecture.ja.md) ·
 [../CHANGELOG.ja.md](../CHANGELOG.ja.md)

@@ -361,7 +361,11 @@ gguf-fetch https://pirateface.co/mradermacher/Ornith-1.5-9B-uncensored-GGUF --fi
   今までどおりそちらから読みます。消えた後はヘッダが読めないので、**ファイルサイズだけの
   判定**になり (サイズは Pirate Face の 0.1 GB 刻み)、そう表示します。KV キャッシュと
   最大 ctx は、落としてから測るまで分かりません。
-* swarm には `aria2c` が要ります (`brew install aria2` / `apt install aria2`)。
+* **torrent はページより少ないファイルしか持たないことがあります。** swarm を使うときは、
+  先に torrent のメタデータ (数十 KiB) を読み、実際に入っているファイルだけを判定します。
+  入っていないものは名前を出して候補から外します。`--dry-run` でもこの読み取りは行います。
+* swarm には `aria2c` が要ります (`brew install aria2` / `apt install aria2`)。インストール・使い方・
+  困ったときは [docs/pirateface.ja.md](docs/pirateface.ja.md) に書いてあります。
 
 </details>
 

@@ -7,6 +7,7 @@
 | | |
 | :-- | :-- |
 | [commands.ja.md](commands.ja.md) | 4本のコマンドの全フラグ。既定値と、その既定値である理由つき |
+| [pirateface.ja.md](pirateface.ja.md) | Hugging Face から消えたモデルを Pirate Face / swarm (`aria2c`) から落とすための、インストールと使い方 |
 | [configuration.ja.md](configuration.ja.md) | `gguf-fit.toml` の全キー、優先順位、環境変数 |
 | [architecture.ja.md](architecture.ja.md) | モジュール地図、純粋な中核、どの境界が効いているか |
 | [../CHANGELOG.ja.md](../CHANGELOG.ja.md) | 何がいつ変わったか |
@@ -25,6 +26,7 @@
 それを繰り返すドキュメントは黙って古くなります。実行時の出力は古くなりません。
 
 English: [README.md](README.md) · [commands.md](commands.md) ·
+[pirateface.md](pirateface.md) ·
 [configuration.md](configuration.md) ·
 [architecture.md](architecture.md) ·
 [../CHANGELOG.md](../CHANGELOG.md)

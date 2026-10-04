@@ -872,6 +872,24 @@ MESSAGES: dict[str, dict[str, str]] = {
         "en": "not in the torrent: {names}",
         "ja": "torrent に含まれていません: {names}",
     },
+    "pf_torrent_narrowed": {
+        "en": "{n} GGUF file(s) listed on the page are not in the torrent, so they "
+              "are left out of the candidates. The torrent holds only: {kept}",
+        "ja": "ページに載っている GGUF のうち {n} 本は torrent に入っていないため、"
+              "候補から外しました。torrent にあるのは: {kept}",
+    },
+    "pf_narrow_skipped": {
+        "en": "could not read the torrent contents before judging (aria2c exit "
+              "{code}); the table below assumes every file on the page is in the "
+              "swarm, which may not be true",
+        "ja": "判定の前に torrent の中身を読めませんでした (aria2c 終了コード "
+              "{code})。下の表はページの全ファイルが swarm にある前提で、実際は "
+              "違うかもしれません",
+    },
+    "pf_torrent_no_gguf": {
+        "en": "{repo}: the torrent holds none of the GGUF files listed on the page.",
+        "ja": "{repo}: ページに載っている GGUF が torrent には1本も入っていません。",
+    },
     "pf_already": {
         "en": "already downloaded and matching the recorded SHA-256, skipping: {names}",
         "ja": "ダウンロード済みで SHA-256 も記録と一致するため省きます: {names}",

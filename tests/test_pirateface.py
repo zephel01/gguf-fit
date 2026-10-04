@@ -427,7 +427,10 @@ def test_hf_gone_judges_by_size_only_and_says_so(site, monkeypatch, tmp_path, ca
     assert "Hugging Face does not return" in err
     assert "download via: swarm" in out
     assert "--bt-metadata-only=true" in out and "--select-file=<n,...>" in out
-    assert not fakes.calls()                        # --dry-run は何も実行しない
+    # --dry-run は本体を落とさない。torrent の中身を見るメタデータ取得 (数十 KiB) だけ
+    # は、判定を正しくするために行う
+    assert all("--bt-metadata-only=true" in c for c in fakes.calls())
+    assert len(fakes.calls()) == 1
     assert not any("resolve" in p for p in site.seen)  # ヘッダを取りに行かない
 
 
@@ -558,14 +561,74 @@ def test_missing_tools_are_explained(site, monkeypatch, tmp_path, capsys):
     assert rc == 127 and "neither aria2c nor hf" in err
 
 
-def test_a_file_missing_from_the_torrent_is_refused(site, monkeypatch, tmp_path, capsys, fakes):
-    # ページには載っているが torrent には無い (パッケージし損ねた)
-    (Path(os.environ["FAKE_TORRENT"])).write_bytes(
+def test_a_file_missing_from_the_torrent_is_dropped_before_judging(
+        site, monkeypatch, tmp_path, capsys, fakes):
+    # ページには載っているが torrent には無い。実物 (Ornith-1.5-9B) では、ページに
+    # 12 量子化が載っていて torrent には Q4_K_M の 1 本しか入っていなかった
+    Path(os.environ["FAKE_TORRENT"]).write_bytes(
         make_torrent({"M-Q8_0.gguf": CONTENT["M-Q8_0.gguf"]}))
-    rc, _out, err = _run(monkeypatch, capsys, REPO, "--source", "pirateface", "--vram", "24",
-                         "--pick", "Q4_K_M", "--mmproj", "none", "--yes", "--via", "swarm",
-                         "--dir", str(tmp_path / "models"), "--aria2-bin", fakes.aria2)
-    assert rc == 1 and "not in the torrent: M-Q4_K_M.gguf" in err
+    rc, out, err = _run(monkeypatch, capsys, REPO, "--source", "pirateface", "--vram", "24",
+                        "--fit", "--dry-run", "--dir", str(tmp_path / "m"),
+                        "--aria2-bin", fakes.aria2)
+    assert rc == 0
+    assert "not in the torrent, so they are left out" in err
+    assert "M-Q8_0.gguf" in err                      # torrent にあるものを言う
+    assert "Q4_K_M" not in out                       # 判定表にも出さない
+    assert "Q8_0" in out
+
+
+def test_picking_a_file_the_torrent_lacks_does_not_start_a_transfer(
+        site, monkeypatch, tmp_path, capsys, fakes):
+    Path(os.environ["FAKE_TORRENT"]).write_bytes(
+        make_torrent({"M-Q8_0.gguf": CONTENT["M-Q8_0.gguf"]}))
+    with pytest.raises(SystemExit) as exc:
+        _run(monkeypatch, capsys, REPO, "--source", "pirateface", "--vram", "24",
+             "--pick", "Q4_K_M", "--mmproj", "none", "--yes", "--via", "swarm",
+             "--dir", str(tmp_path / "models"), "--aria2-bin", fakes.aria2)
+    assert "matched nothing" in str(exc.value) and "Available: Q8_0" in str(exc.value)
+    assert all("--select-file" not in " ".join(c) for c in fakes.calls())
+
+
+def test_a_torrent_with_none_of_the_listed_files_stops(
+        site, monkeypatch, tmp_path, capsys, fakes):
+    Path(os.environ["FAKE_TORRENT"]).write_bytes(make_torrent({"other.txt": b"x"}))
+    with pytest.raises(SystemExit) as exc:
+        _run(monkeypatch, capsys, REPO, "--source", "pirateface", "--vram", "24",
+             "--fit", "--dry-run", "--dir", str(tmp_path / "m"),
+             "--aria2-bin", fakes.aria2)
+    assert "holds none of the GGUF files" in str(exc.value)
+
+
+def test_judging_still_runs_when_the_torrent_cannot_be_read_first(
+        site, monkeypatch, tmp_path, capsys, fakes):
+    monkeypatch.setenv("FAKE_FAIL", "1")             # peer が居ない
+    rc, out, err = _run(monkeypatch, capsys, REPO, "--source", "pirateface", "--vram", "24",
+                        "--fit", "--dry-run", "--dir", str(tmp_path / "m"),
+                        "--aria2-bin", fakes.aria2)
+    assert rc == 0
+    assert "could not read the torrent contents before judging" in err
+    assert "Q4_K_M" in out and "Q8_0" in out         # 絞らず、従来どおりの表
+
+
+def test_hf_alive_does_not_wait_for_the_swarm_before_judging(
+        site, monkeypatch, tmp_path, capsys, fakes):
+    # HF から落とせる経路が残っているなら、どちらでも取れるので torrent は見に行かない
+    site.hf_api = {"siblings": [
+        {"rfilename": "M-Q4_K_M.gguf", "size": 11}, {"rfilename": "M-Q8_0.gguf", "size": 22}]}
+    rc, _out, _err = _run(monkeypatch, capsys, REPO, "--source", "pirateface",
+                          "--vram", "24", "--json", "--probe", "none",
+                          "--aria2-bin", fakes.aria2)
+    assert rc == 0 and not fakes.calls()
+
+
+def test_the_torrent_read_for_judging_is_reused_for_the_download(
+        site, monkeypatch, tmp_path, capsys, fakes):
+    rc, _out, _err = _run(monkeypatch, capsys, REPO, "--source", "pirateface", "--vram", "24",
+                          "--pick", "Q4_K_M", "--mmproj", "none", "--yes",
+                          "--dir", str(tmp_path / "models"), "--aria2-bin", fakes.aria2)
+    assert rc == 0
+    kinds = ["meta" if "--bt-metadata-only=true" in c else "dl" for c in fakes.calls()]
+    assert kinds == ["meta", "dl"]                   # メタデータは1回だけ
 
 
 def test_a_page_that_cannot_be_read_stops_with_the_url(site, monkeypatch, tmp_path, capsys):
@@ -595,7 +658,9 @@ def test_a_second_run_does_not_download_again(site, monkeypatch, tmp_path, capsy
     rc, out, _err = _run(monkeypatch, capsys, *argv)
     assert rc == 0
     assert "already downloaded" in out and "M-Q4_K_M.gguf" in out
-    assert len(fakes.calls()) == first               # aria2c を呼んでいない
+    # 2回目は本体を落とし直さない (メタデータを読むだけ。--select-file は無い)
+    new_calls = fakes.calls()[first:]
+    assert all("--bt-metadata-only=true" in c for c in new_calls)
 
 
 def test_a_damaged_earlier_copy_is_downloaded_again(site, monkeypatch, tmp_path, capsys, fakes):
