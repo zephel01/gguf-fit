@@ -1104,8 +1104,51 @@ def _resolve_via(via: str, aria2: str | None, hf: str | None,
     return "hf" if hf else None
 
 
+def _fetch_torrent(aria2: str, page: pf.PageInfo, lang: str,
+                   ) -> tuple[bytes | None, int]:
+    """magnet から .torrent を取る。``(中身, 終了コード)``。取れなければ中身は ``None``."""
+    assert page.magnet
+    with tempfile.TemporaryDirectory(prefix="gguf-fit-") as tmp:
+        work = Path(tmp)
+        print(t("pf_metadata", lang, sec=pf.METADATA_TIMEOUT_S), file=sys.stderr)
+        res = subprocess.run(pf.metadata_command(aria2, page.magnet, work),
+                             check=False)
+        torrents = sorted(work.glob("*.torrent"))
+        if res.returncode != 0 or not torrents:
+            return None, res.returncode or 1
+        try:
+            return torrents[0].read_bytes(), 0
+        except OSError:
+            return None, 1
+
+
+def _narrow_to_torrent(info: dict, torrent: bytes, lang: str) -> dict | None:
+    """ページに載っていても torrent に入っていないファイルを候補から外す.
+
+    Pirate Face のページは HF のファイル一覧を丸ごと載せるが、torrent はその
+    一部 (例: 12 量子化のうち Q4_K_M の 1 本) しか持たないことがある。判定表が
+    「落とす」と言ったものが swarm に無い、を避けるため、**判定の前に** torrent
+    の中身で絞る。torrent を読めなければ ``None`` (絞らない)。
+    """
+    try:
+        _top, tfiles = pf.torrent_files(torrent)
+    except ValueError:
+        return None
+    have = {f.path for f in tfiles}
+    sibs = info.get("siblings") or []
+    kept = [x for x in sibs if x.get("rfilename") in have]
+    dropped = [x["rfilename"] for x in sibs
+               if x.get("rfilename") not in have
+               and str(x.get("rfilename", "")).lower().endswith(".gguf")]
+    if dropped:
+        print("# " + t("pf_torrent_narrowed", lang, n=len(dropped),
+                       kept=", ".join(sorted(have)) or "-"), file=sys.stderr)
+    return {**info, "siblings": kept}
+
+
 def _run_swarm(aria2: str, page: pf.PageInfo, files: list[str], dest: Path,
-               lang: str) -> int:
+               lang: str, prefetched: tuple[bytes | None, int] | None = None,
+               ) -> int:
     """magnet から .torrent を取り、選んだファイルだけ swarm から落とす."""
     assert page.magnet  # 呼び出し側で確認済み
     # 前回までに落とし終えて、SHA-256 が記録と合うものは落とし直さない
@@ -1118,17 +1161,15 @@ def _run_swarm(aria2: str, page: pf.PageInfo, files: list[str], dest: Path,
             return 0
     with tempfile.TemporaryDirectory(prefix="gguf-fit-") as tmp:
         work = Path(tmp)
-        print(t("pf_metadata", lang, sec=pf.METADATA_TIMEOUT_S), file=sys.stderr)
-        res = subprocess.run(pf.metadata_command(aria2, page.magnet, work),
-                             check=False)
-        torrents = sorted(work.glob("*.torrent"))
-        if res.returncode != 0 or not torrents:
-            print("!! " + t("pf_metadata_failed", lang, code=res.returncode),
-                  file=sys.stderr)
-            return res.returncode or 1
+        if prefetched is None:
+            prefetched = _fetch_torrent(aria2, page, lang)
+        raw, code = prefetched
+        if raw is None:
+            print("!! " + t("pf_metadata_failed", lang, code=code), file=sys.stderr)
+            return code or 1
         try:
-            top, tfiles = pf.torrent_files(torrents[0].read_bytes())
-        except (OSError, ValueError) as exc:
+            top, tfiles = pf.torrent_files(raw)
+        except ValueError as exc:
             print("!! " + t("pf_torrent_unreadable", lang, err=exc), file=sys.stderr)
             return 1
         indices, missing = pf.select_indices(tfiles, files)
@@ -1137,7 +1178,9 @@ def _run_swarm(aria2: str, page: pf.PageInfo, files: list[str], dest: Path,
                   file=sys.stderr)
             return 1
         dest.mkdir(parents=True, exist_ok=True)
-        cmd = pf.download_command(aria2, torrents[0], indices, dest)
+        torrent_path = work / "fetched.torrent"
+        torrent_path.write_bytes(raw)
+        cmd = pf.download_command(aria2, torrent_path, indices, dest)
         print(shlex.join(cmd))
         res = subprocess.run(cmd, check=False)
         if res.returncode != 0:
@@ -1164,6 +1207,7 @@ def _run_swarm(aria2: str, page: pf.PageInfo, files: list[str], dest: Path,
 
 def _download_pirateface(args, listing: Listing, files: list[str], dest: Path,
                          aria2: str | None, hf: str | None, lang: str,
+                         prefetched: tuple[bytes | None, int] | None = None,
                          ) -> int | None:
     """Pirate Face 経由のダウンロード。``None`` は成功 (呼び出し側が後始末へ進む).
 
@@ -1217,7 +1261,7 @@ def _download_pirateface(args, listing: Listing, files: list[str], dest: Path,
     dest.mkdir(parents=True, exist_ok=True)
     if chosen == "swarm":
         assert aria2 is not None
-        rc = _run_swarm(aria2, page, files, dest, lang)
+        rc = _run_swarm(aria2, page, files, dest, lang, prefetched)
         if rc == 0:
             return None
         if args.via == "auto" and hf:
@@ -1318,9 +1362,29 @@ def main() -> int:
                   file=sys.stderr)
             listing = _listing_from_pirateface(args.repo, lang)
     info = listing.info
+    aria2_path = shutil.which(str(r_aria2.value) if r_aria2.value else "aria2c")
+    prefetched: tuple[bytes | None, int] | None = None
     if listing.source == "pirateface":
         # リビジョンは Pirate Face が記録した commit に固定する。main ではない
         args.revision = listing.revision
+        page = listing.page
+        # swarm が実際の取得経路になるときは、判定の前に torrent の中身を見る。
+        # ページは HF の一覧を丸ごと載せるが torrent は一部しか持たないことがある
+        # (HF から落とせる経路が残っているなら、どちらでも取れるので絞らない)
+        if (page is not None and page.magnet and aria2_path
+                and args.via != "hf"
+                and (args.via == "swarm" or not listing.hf_alive)):
+            prefetched = _fetch_torrent(aria2_path, page, lang)
+            if prefetched[0] is None:
+                print("# " + t("pf_narrow_skipped", lang, code=prefetched[1]),
+                      file=sys.stderr)
+            else:
+                narrowed = _narrow_to_torrent(info, prefetched[0], lang)
+                if narrowed is not None:
+                    info = narrowed
+                    if not any(str(x.get("rfilename", "")).lower().endswith(".gguf")
+                               for x in info.get("siblings") or []):
+                        sys.exit(t("pf_torrent_no_gguf", lang, repo=args.repo))
         if not listing.hf_alive:
             # HF から GGUF ヘッダを読めない。ヘッダ無しの粗い判定にする
             args.probe = "none"
@@ -1501,8 +1565,8 @@ def main() -> int:
 
     binary = hf_binary(str(r_hf_bin.value) if r_hf_bin.value else None)
     if listing.source == "pirateface":
-        aria2 = shutil.which(str(r_aria2.value) if r_aria2.value else "aria2c")
-        rc = _download_pirateface(args, listing, files, dest, aria2, binary, lang)
+        rc = _download_pirateface(args, listing, files, dest, aria2_path, binary,
+                                  lang, prefetched)
         if rc is not None:
             # 容量が足りないことは伝わっているので、--dry-run でも終了コードに残す
             return 1 if (args.dry_run and short_on_disk) else rc

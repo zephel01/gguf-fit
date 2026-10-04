@@ -18,6 +18,13 @@ This project has not cut a release yet; `version` in `pyproject.toml` is still
   uses it only as a fallback (`hf download --revision <sha>`). While Hugging Face still has
   the revision the verdict is unchanged; without it the verdict is by file size only and
   says so. JSON gained `source`, `magnet`, `sizes_approximate`.
+  **The page lists the whole Hugging Face repo, but the torrent may hold only part of it**
+  (checked against a real swarm: Ornith-1.5-9B-uncensored-GGUF lists 12 quantizations,
+  the torrent holds only Q4_K_M). When the swarm is the route that will be used, the
+  26 KiB torrent metadata is read *before* judging, files not in the torrent are left out
+  of the candidates (and say so), and the same torrent is reused for the download. `--dry-run`
+  therefore reads that metadata (it still downloads nothing). If the metadata cannot be
+  read, the table is shown as before with a warning that it assumes every listed file exists.
 - **`gguf-fetch`** — a fourth command. Downloads GGUF files from Hugging Face,
   but decides which ones fit **before** downloading them: the repo listing costs
   a few KB, one GGUF header comes over an HTTP `Range` request (~12 MiB), and

@@ -18,6 +18,13 @@
   では補助 (`hf download --revision <sha>`) にだけ使います。Hugging Face にリビジョンが
   残っているあいだの判定は今までどおり、無いときはファイルサイズだけの判定で、
   そう表示します。JSON に `source` / `magnet` / `sizes_approximate` を追加。
+  **ページは Hugging Face のリポジトリ全体を載せますが、torrent はその一部しか持たない
+  ことがあります** (実 swarm で確認: Ornith-1.5-9B-uncensored-GGUF はページに 12 量子化、
+  torrent には Q4_K_M の 1 本だけ)。swarm が取得経路になるときは、判定の**前に** 26 KiB
+  ほどの torrent メタデータを読み、torrent に無いファイルは候補から外して(そう表示して)、
+  同じ torrent をそのままダウンロードにも使います。そのため `--dry-run` でもこの
+  メタデータは読みます (本体は落としません)。読めなかったときは従来どおりの表に、
+  「ページの全ファイルがある前提」という警告を付けます。
 - **`gguf-fetch`** — 4本目のコマンド。Hugging Face から GGUF を落としますが、
   **落とす前に**どれが載るかを決めます。ファイル一覧は数 KB、GGUF ヘッダは
   HTTP `Range` で1本ぶん（約 12 MiB）取り、`gguf-plan` と同じ式でファイルを
