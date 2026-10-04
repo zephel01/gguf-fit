@@ -349,7 +349,8 @@ gguf-fetch https://pirateface.co/mradermacher/Ornith-1.5-9B-uncensored-GGUF --fi
 * **The torrent can hold fewer files than the page lists.** When the swarm will be used,
   `gguf-fetch` reads the torrent metadata (tens of KiB) first and judges only the files that
   are really in it; the rest are named and left out. `--dry-run` reads this metadata too.
-* Needs `aria2c` for the swarm (`brew install aria2` / `apt install aria2`).
+* Needs `aria2c` for the swarm (`brew install aria2` / `apt install aria2`). Installation, usage and
+  troubleshooting: [docs/pirateface.md](docs/pirateface.md).
 
 </details>
 
